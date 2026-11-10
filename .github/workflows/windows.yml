@@ -23,9 +23,8 @@ jobs:
       VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
       VITE_GOOGLE_DESKTOP_CLIENT_ID: ${{ vars.VITE_GOOGLE_DESKTOP_CLIENT_ID }}
       VITE_GOOGLE_DESKTOP_CLIENT_SECRET: ${{ vars.VITE_GOOGLE_DESKTOP_CLIENT_SECRET }}
-      VITE_MICROSOFT_CLIENT_ID: ${{ vars.VITE_MICROSOFT_CLIENT_ID }}
       VITE_PUBLIC_URL: https://notes.flion.fr
-      VITE_GITHUB_REPOSITORY: arnaudlegoatdesdev/flion
+      VITE_GITHUB_REPOSITORY: arnaudlegoatdesdev/notes
       FLION_UPDATER_PUBLIC_KEY: ${{ vars.FLION_UPDATER_PUBLIC_KEY }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -79,7 +78,7 @@ jobs:
               plugins = @{
                 updater = @{
                   pubkey = ($env:FLION_UPDATER_PUBLIC_KEY).Trim()
-                  endpoints = @('https://github.com/arnaudlegoatdesdev/flion/releases/latest/download/latest.json')
+                  endpoints = @('https://github.com/arnaudlegoatdesdev/notes/releases/latest/download/latest.json')
                   windows = @{ installMode = 'passive' }
                 }
               }
@@ -114,7 +113,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          if ($version -eq '0.1.1') { & ./.github/test-windows-upgrade.ps1 }
+          & ./.github/test-windows-upgrade.ps1
       - name: Préparer les fichiers livrables
         shell: pwsh
         run: |
@@ -137,7 +136,7 @@ jobs:
               platforms = @{
                 'windows-x86_64' = @{
                   signature = $signature
-                  url = "https://github.com/arnaudlegoatdesdev/flion/releases/download/v$version/$($installer.Name)"
+                  url = "https://github.com/arnaudlegoatdesdev/notes/releases/download/v$version/$($installer.Name)"
                 }
               }
             }

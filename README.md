@@ -1,65 +1,53 @@
 # Notes
 
-Un espace personnel pour garder des mémos, des photos et des fichiers dans des salons, avec le confort d’une messagerie. Une interface web adaptée au téléphone et une application Windows construite avec Tauri.
+Un espace personnel pour les mémos, les photos et les fichiers, organisé en salons. Site mobile et application Windows partagent la même interface.
 
-> Ce projet personnel a été réalisé rapidement à la demande de plusieurs personnes, avec une aide importante d’outils d’intelligence artificielle pour le code, l’interface et la documentation. Il est indépendant de ma formation et de tout travail scolaire. Il ne doit pas être interprété comme une évaluation de mes compétences, de mon niveau ou de mon apprentissage.
+> Projet personnel développé rapidement à la demande de plusieurs personnes, avec une aide importante de l’IA pour le code, l’interface et la documentation. Il est indépendant de ma formation et de tout travail scolaire. Il ne représente pas une évaluation de mes compétences ou de mon apprentissage.
 
-## Ce que fait cette version
-
-- Salons personnalisables et messages modifiables ou supprimables.
-- Pièces jointes, recherche et messages épinglés.
-- Coffre chiffré sur l’appareil et sauvegarde sur Google Drive ou OneDrive personnel.
-- Limite de stockage choisie par l’utilisateur, consommation visible et gestion des erreurs de quota.
-- Cinq thèmes, plusieurs polices et réglage de la taille du texte.
-- Même code d’interface pour le web mobile et Windows.
-
-L’application s’appelle **Notes** et utilise le domaine **https://notes.flion.fr**. L’hébergement peut être transféré vers Cloudflare Pages sans ajouter de serveur de données.
-
-## État du projet
-
-Cette version est une base fonctionnelle préliminaire, sans audit de sécurité indépendant. Les intégrations cloud sont implémentées, mais doivent être vérifiées avec les inscriptions OAuth du mainteneur avant une ouverture au public. Les connexions désactivées faute de configuration ne simulent aucun compte ni aucune synchronisation.
-
-Le dépôt contient une compilation Windows par GitHub Actions. Les compilations officielles sont configurées pour des mises à jour signées : Notes vérifie la disponibilité d’une version au démarrage et propose son installation. Une compilation locale reste sans mise à jour intégrée tant qu’une vraie paire de clés n’est pas configurée. L’installeur n’est pas signé avec Authenticode ; la signature des mises à jour Tauri est distincte de la signature Windows.
+[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/latest)
 
 ## Utilisation
 
-Créez un coffre et conservez son mot de passe, puis organisez vos salons. Pour retrouver le même espace sur un autre appareil, choisissez le même fournisseur, connectez le même compte cloud et utilisez le mot de passe du coffre. Les éléments locaux restent disponibles dans ce navigateur ou cette installation tant que ses données ne sont pas effacées. Le chargement initial de la version web nécessite une connexion Internet.
+Connectez-vous avec Google. Choisissez ensuite **Google Drive**, recommandé pour retrouver le coffre sur votre téléphone, ou **cet appareil uniquement**. La connexion Google ne donne pas automatiquement accès à Drive. Le mode local ne synchronise pas les fichiers entre appareils.
 
-Le mot de passe du coffre n’est pas celui de Google ou de Microsoft. Il n’existe pas de réinitialisation permettant de récupérer le contenu chiffré en cas de perte. Conservez également une sauvegarde exportée avant toute opération de remplacement du coffre.
+Pour un nouveau coffre Drive, la limite maximale correspond à l’espace libre annoncé par le compte Google. Une limite de112 Go est donc proposée si le quota indique112 Go libres. Les autres usages du compte continuent à consommer cet espace ; chaque transfert vérifie de nouveau la disponibilité.
 
-L’export en un fichier est limité à **512 Mio** ; cette limite ne s’applique pas à la synchronisation cloud progressive. Les pièces jointes sont limitées à **25 Mio par fichier** dans cette première version. La consommation du cloud peut inclure d’anciennes versions de synchronisation. Supprimer un message dans l’interface ne garantit donc pas l’effacement immédiat de toutes ses copies historiques. Voir [l’architecture](docs/ARCHITECTURE.md).
+Créez le mot de passe du coffre, puis utilisez vos salons. Ce mot de passe chiffre les données et reste distinct du compte Google. Il ne peut pas être réinitialisé pour récupérer un coffre perdu.
 
-## Stockage et confidentialité
+Sur un autre appareil, connectez le même compte Google, choisissez Google Drive et saisissez le mot de passe du coffre existant. L’ouverture de Notes demande une connexion Internet pour Google ; une fois le coffre ouvert, les modifications locales sont conservées même si le réseau est interrompu.
 
-Notes ne nécessite ni serveur applicatif de données ni base de comptes gérés par l’auteur. Il faut un hébergement web statique HTTPS et les services du fournisseur cloud choisi. L’application communique directement avec ce fournisseur.
+## Fonctionnalités
 
-Le contenu et les noms privés sont chiffrés avant l’envoi. Le cloud conserve plusieurs objets opaques plutôt qu’un gros fichier à réécrire à chaque modification. Un éventuel export regroupe le coffre pour la sauvegarde. Le fournisseur peut encore connaître le compte, la taille des objets et les dates d’accès. Le chiffrement ne protège pas un appareil compromis ou une version de l’application malveillante.
+- Salons personnalisables, messages modifiables et supprimables.
+- Fichiers, aperçus d’images, zoom, recherche et épingles.
+- Cinq thèmes, choix de police et taille du texte.
+- Chiffrement local AES 256 GCM et synchronisation directe avec Google Drive.
+- Stockage local seul possible, avec avertissement sur l’absence de synchronisation.
+- Mises à jour Windows signées.
 
-Google annonce [jusqu’à 15 Go partagés entre Gmail, Drive et Photos](https://support.google.com/mail/answer/9312312?hl=fr). Une [page officielle Google](https://www.google.com/intl/en_ph/photos/about/) décrit, pour les comptes concernés, 5 Go plus 10 Go après ajout d’un numéro valide. La capacité réelle du compte prévaut. Microsoft propose [5 Go de stockage cloud gratuit](https://support.microsoft.com/en-us/onedrive/microsoft-storage-faqs). Dans les deux cas, les autres usages du compte réduisent l’espace disponible.
+## Hébergement et comptes
 
-Le quota personnel Notes est distinct du quota global du compte. Avec l’accès limité au dossier d’application OneDrive, le quota global peut être indisponible. L’application l’indique et conserve les données locales si le fournisseur refuse un transfert.
+Aucun serveur de données ni base de comptes n’est géré par l’auteur. Google vérifie l’identité ; l’application appelle directement ses API. Le sujet Google est conservé dans le coffre chiffré pour l’associer au compte. Les jetons ne sont pas enregistrés dans le stockage persistant.
+
+Le site est statique, construit avec React, TypeScript et Vite. Cloudflare Pages peut le publier depuis ce dépôt : branche `main`, Node 24, commande `npm run build`, sortie `dist`. Le domaine est `notes.flion.fr`. [Configuration](docs/SETUP.md).
+
+## Limites et vérification
+
+Fichiers de 25 Mio maximum. Export regroupé limité à 512 Mio ; l’import cloud est progressif. Les anciennes versions chiffrées restent sur Drive, donc supprimer un message ne purge pas immédiatement toutes ses copies historiques. Les conflits entre appareils sont bloqués pour préserver les copies locales.
+
+Le code de chiffrement n’a pas été audité indépendamment. Les tests automatisés ne remplacent pas un essai de connexion avec un vrai compte Google. L’installeur possède une signature de mise à jour Tauri, distincte d’un certificat Windows Authenticode. [Sécurité](SECURITY.md).
 
 ## Développement
-
-Prérequis : Node.js 24 LTS et npm. Pour Windows, ajoutez [les prérequis Tauri](https://v2.tauri.app/start/prerequisites/), dont Rust et les outils C++ de Visual Studio.
 
 ```sh
 npm ci
 cp .env.example .env.local
 npm run dev
-```
-
-```sh
 npm test
 npm run build
 npm run tauri -- dev
-npm run tauri -- build
 ```
 
-L’interface utilise React et TypeScript. Rust sert à l’enveloppe Windows, à l’autorisation OAuth dans le navigateur système et aux mises à jour natives. Cette répartition garde une seule interface et un seul format de coffre pour les deux plateformes.
+Node 24 est utilisé en CI. Pour Windows, installez les [prérequis Tauri](https://v2.tauri.app/start/prerequisites/). Les variables OAuth se configurent à la compilation ; les utilisateurs finaux n’ont pas à créer de projet Google.
 
-Les identifiants OAuth se configurent par le mainteneur au moment de la compilation. Les utilisateurs finaux n’ont pas à créer un projet Google ou Microsoft. Voir [la configuration cloud et l’hébergement](docs/SETUP.md) et [la publication Windows](docs/RELEASES.md).
-
-## Licence
-
-[MIT](LICENSE). Voir [SECURITY.md](SECURITY.md) pour les limites de protection et le signalement d’un problème.
+[Publication Windows](docs/RELEASES.md) · [Architecture](docs/ARCHITECTURE.md) · [Licence MIT](LICENSE)

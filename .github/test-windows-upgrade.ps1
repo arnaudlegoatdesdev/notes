@@ -30,7 +30,7 @@ function Invoke-Installer([string]$path, [string[]]$arguments) {
 }
 
 $legacyInstaller = Join-Path $env:RUNNER_TEMP 'notes-upgrade-previous.exe'
-Invoke-WebRequest 'https://github.com/arnaudlegoatdesdev/flion/releases/download/v0.1.0/Flion_0.1.0_x64-setup.exe' -OutFile $legacyInstaller
+Invoke-WebRequest 'https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.1.0/Flion_0.1.0_x64-setup.exe' -OutFile $legacyInstaller
 Invoke-Installer $legacyInstaller @('/S')
 $legacy = Get-Registration 'Flion'
 if ($null -eq $legacy -or $legacy.DisplayVersion -ne '0.1.0' -or $legacy.MainBinaryName -ine 'flion.exe') {
@@ -43,12 +43,13 @@ $notesProfileDirectory = Join-Path $env:LOCALAPPDATA 'fr.flion.notes'
 New-Item -ItemType Directory -Force $notesProfileDirectory | Out-Null
 $marker = Join-Path $notesProfileDirectory 'upgrade-preservation-marker.txt'
 'Storage must survive a product rename.' | Set-Content $marker
-$installer = Get-Item 'src-tauri/target/release/bundle/nsis/Notes_0.1.1_x64-setup.exe'
+$version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+$installer = Get-Item "src-tauri/target/release/bundle/nsis/Notes_$($version)_x64-setup.exe"
 if ($null -eq $installer) { throw "Installeur Notes introuvable." }
 Invoke-Installer $installer.FullName @('/S', '/UPDATE')
 
 $current = Get-Registration 'Notes'
-if ($null -eq $current -or $current.DisplayName -ne 'Notes' -or $current.DisplayVersion -ne '0.1.1') {
+if ($null -eq $current -or $current.DisplayName -ne 'Notes' -or $current.DisplayVersion -ne (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version) {
   throw "La mise à jour n’a pas enregistré Notes correctement."
 }
 if ($null -ne (Get-Registration 'Flion')) { throw "Une ancienne entrée de désinstallation subsiste." }

@@ -1,3 +1,4 @@
+import { assertVaultOwner } from './auth';
 import type { CloudConnection, CloudFile, CloudQuota } from './cloud';
 import { hasVault, importVaultStream, inspectManifest, unlockVault, type VaultSession } from './core/vault';
 import type { Attachment, VaultData } from './core/types';
@@ -128,7 +129,7 @@ export async function fetchCloudSnapshot(connection: CloudConnection, password: 
   };
 }
 
-export async function openCloudVault(connection: CloudConnection, password: string) {
+export async function openCloudVault(connection: CloudConnection, password: string, expectedSubject?: string) {
   const account = await accountKey(connection);
   const state = readSyncState();
   const localExists = await hasVault();
@@ -147,20 +148,22 @@ export async function openCloudVault(connection: CloudConnection, password: stri
     } finally { local.lock(); }
   }
   const { manifest, head, load } = await fetchCloudSnapshot(connection, password, expectedVaultId, localExists ? state?.head ?? undefined : undefined);
+  if (expectedSubject) assertVaultOwner(await inspectManifest(password,manifest),expectedSubject);
   const session = await importVaultStream(password, manifest, load, expectedRevision);
   writeSyncState({ provider: connection.provider, accountKey: account, vaultId: session.data.id, manifestHash: await hash(manifest), head, dirty: false });
   return session;
 }
 
 let synchronizing = false;
-export async function syncVault(connection: CloudConnection, session: VaultSession, password: string): Promise<{ session: VaultSession; quota: CloudQuota | null; changed: boolean; cloudBytes: number }> {
+export async function syncVault(connection: CloudConnection, session: VaultSession, password: string, expectedSubject?: string): Promise<{ session: VaultSession; quota: CloudQuota | null; changed: boolean; cloudBytes: number }> {
   if (synchronizing) throw new Error('Une synchronisation est déjà en cours.');
   synchronizing = true;
-  try { return await performSync(connection, session, password); }
+  try { return await performSync(connection, session, password, expectedSubject); }
   finally { synchronizing = false; }
 }
-async function performSync(connection: CloudConnection, session: VaultSession, password: string): Promise<{ session: VaultSession; quota: CloudQuota | null; changed: boolean; cloudBytes: number }> {
+async function performSync(connection: CloudConnection, session: VaultSession, password: string, expectedSubject?: string): Promise<{ session: VaultSession; quota: CloudQuota | null; changed: boolean; cloudBytes: number }> {
   const local = await snapshot(session);
+  if(expectedSubject) assertVaultOwner(local.data,expectedSubject);
   const account = await accountKey(connection);
   const state = readSyncState();
   checkBinding(state, connection, account, local.data.id);
@@ -176,6 +179,7 @@ async function performSync(connection: CloudConnection, session: VaultSession, p
     const latest = readSyncState();
     checkBinding(latest, connection, account, local.data.id);
     if (latest?.head !== state!.head || latest?.dirty || await hash(await session.exportManifest()) !== local.manifestHash) conflict();
+    if(expectedSubject || local.data.owner) assertVaultOwner(await inspectManifest(password,manifest),expectedSubject || local.data.owner!.subject);
     const next = await importVaultStream(password, manifest, load, local.revision);
     const importedHash = await hash(manifest);
     writeSyncState({ provider: connection.provider, accountKey: account, vaultId: next.data.id, head: importedHead, manifestHash: importedHash, dirty: false });

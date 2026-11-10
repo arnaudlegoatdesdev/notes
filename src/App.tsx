@@ -69,6 +69,7 @@ import {
   importVault,
   clearLocalVault,
   type VaultSession,
+  inspectManifest,
 } from "./core/vault";
 import {
   CloudError,
@@ -86,10 +87,14 @@ import {
   writeSyncState,
 } from "./sync";
 import { packSession, unpackBundle } from "./archive";
-import { createData, demoData } from "./seed";
+import { createData } from "./seed";
 import { isDesktop, checkForUpdate } from "./desktop";
 import AttachmentImage from "./components/AttachmentImage";
 import ImageViewer from "./components/ImageViewer";
+import VaultSetup, { type VaultOptions } from "./components/VaultSetup";
+import GoogleMark from "./components/GoogleMark";
+import { signInGoogle, assertVaultOwner, type GoogleUser } from "./auth";
+import { availableCloudBytes, formatBytes, validateLimit, GB } from "./quota";
 
 const icons = {
   hash: Hash,
@@ -100,14 +105,7 @@ const icons = {
   code: Code,
   heart: Heart,
 };
-const bytes = (n: number) =>
-  n >= 1024 ** 3
-    ? `${(n / 1024 ** 3).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} Go`
-    : n >= 1024 ** 2
-      ? `${(n / 1024 ** 2).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} Mo`
-      : n >= 1024
-        ? `${Math.ceil(n / 1024)} Ko`
-        : `${n} o`;
+const bytes = formatBytes;
 const time = (at: string) =>
   new Date(at).toLocaleTimeString("fr-FR", {
     hour: "2-digit",
@@ -142,23 +140,12 @@ function Brand({ small = false }: { small?: boolean }) {
     </span>
   );
 }
-function ProviderIcon({ provider }: { provider: Provider }) {
-  return provider === "google" ? (
+function ProviderIcon({ provider: _provider }: { provider: Provider }) {
+  return (
     <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true">
       <path d="m8.2 2 4 7-6.4 11H.5z" fill="#2f9e60" />
       <path d="m8.2 2 7.6 0L23.5 15h-8z" fill="#f4c34f" />
       <path d="M23.5 15 19.7 22H4.3l3.9-7z" fill="#5c8fdf" />
-    </svg>
-  ) : (
-    <svg width="28" height="25" viewBox="0 0 28 24" aria-hidden="true">
-      <path
-        d="M10 8a7 7 0 0 1 13 2 5 5 0 0 1 0 10H7a6 6 0 0 1 0-12z"
-        fill="#397eca"
-      />
-      <path
-        d="m1 14 9-4 8 4 9-1v4a5 5 0 0 1-5 4H7a6 6 0 0 1-6-7"
-        fill="#62b3df"
-      />
     </svg>
   );
 }
@@ -251,19 +238,19 @@ function Text({ text }: { text: string }) {
 }
 
 export default function App() {
-  const [data, setData] = useState<VaultData>(demoData);
-  const [mode, setMode] = useState<"demo" | "vault" | "locked" | "loading">(
-    "loading",
-  );
+  const [data, setData] = useState<VaultData>(createData);
+  const [mode, setMode] = useState<
+    "login" | "setup" | "vault" | "locked" | "loading"
+  >("loading");
   const session = useRef<VaultSession | null>(null);
   const password = useRef("");
+  const [identity, setIdentity] = useState<GoogleUser | null>(null);
   const [active, setActive] = useState("");
   const [view, setView] = useState<"messages" | "files" | "pins">("messages");
   const [drawer, setDrawer] = useState(false),
     [query, setQuery] = useState(""),
     [draft, setDraft] = useState("");
   const [queued, setQueued] = useState<Attachment[]>([]);
-  const demoFiles = useRef(new Map<string, File>());
   const [used, setUsed] = useState(0),
     [cloudBytes, setCloudBytes] = useState(0),
     [quota, setQuota] = useState<CloudQuota | null>(null);
@@ -319,6 +306,12 @@ export default function App() {
     ),
   );
   const replaceSession = async (s: VaultSession, pass?: string) => {
+    if (!identity) {
+      s.lock();
+      throw new Error("Connectez-vous avec Google.");
+    }
+    assertVaultOwner(s.data, identity.id);
+    if (session.current && session.current !== s) session.current.lock();
     session.current = s;
     if (pass !== undefined) password.current = pass;
     setData(s.data);
@@ -331,12 +324,12 @@ export default function App() {
   useEffect(() => {
     let canceled = false;
     hasVault()
-      .then((found) => {
-        if (!canceled) setMode(found ? "locked" : "demo");
+      .then(() => {
+        if (!canceled) setMode("login");
       })
       .catch(() => {
         if (!canceled) {
-          setMode("demo");
+          setMode("login");
           setNotice("Le stockage local est indisponible dans ce navigateur.");
         }
       });
@@ -395,12 +388,13 @@ export default function App() {
     }
   };
   const commit = async (next: VaultData) => {
-    if (mode === "demo") {
-      setData(next);
-      return;
-    }
     if (!session.current) throw new Error("Le coffre est verrouillé.");
-    await session.current.save(next);
+    if (!identity) throw new Error("Connectez-vous avec Google.");
+    assertVaultOwner(next, identity.id);
+    await session.current.save({
+      ...next,
+      owner: next.owner || { provider: "google", subject: identity.id },
+    });
     markDirty();
     setData(session.current.data);
     setUsed(await session.current.usedBytes());
@@ -421,7 +415,12 @@ export default function App() {
       setSyncError("");
       setNeedsReconnect(false);
       try {
-        const result = await syncVault(conn, session.current, password.current);
+        const result = await syncVault(
+          conn,
+          session.current,
+          password.current,
+          identity?.id,
+        );
         session.current = result.session;
         setData(result.session.data);
         setUsed(await result.session.usedBytes());
@@ -438,7 +437,7 @@ export default function App() {
         syncLock.current = false;
       }
     },
-    [connection],
+    [connection, identity?.id],
   );
   useEffect(() => {
     if (connection && syncStatus === "pending" && !busy && !syncBlock.current) {
@@ -482,7 +481,7 @@ export default function App() {
     password.current = "";
     void connection?.disconnect();
     setConnection(null);
-    setData(demoData());
+    setData(createData());
     setQueued([]);
     setDraft("");
     setQuery("");
@@ -528,21 +527,9 @@ export default function App() {
       const added: Attachment[] = [];
       for (const file of Array.from(files)) {
         if (file.size > 25 * 1024 ** 2)
-          throw new Error(
-            "25 Mo maximum par fichier pour cette première version.",
-          );
-        if (mode === "demo") {
-          const a = {
-            id: crypto.randomUUID(),
-            name: file.name,
-            mime: file.type,
-            size: file.size,
-            storedSize: file.size,
-          };
-          demoFiles.current.set(a.id, file);
-          added.push(a);
-        } else if (session.current)
-          added.push(await session.current.addFile(file));
+          throw new Error("25 Mio maximum par fichier.");
+        if (!session.current) throw new Error("Le coffre est verrouillé.");
+        added.push(await session.current.addFile(file));
         const justAdded = added.splice(0);
         setQueued((q) => [...q, ...justAdded]);
       }
@@ -553,7 +540,6 @@ export default function App() {
   const removeQueued = (a: Attachment) =>
     void run(async () => {
       if (session.current) await session.current.removeFile(a.id);
-      else demoFiles.current.delete(a.id);
       setQueued((q) => q.filter((f) => f.id !== a.id));
       if (session.current) setUsed(await session.current.usedBytes());
     });
@@ -587,17 +573,13 @@ export default function App() {
           });
           for (const a of m.attachments) {
             if (session.current) await session.current.removeFile(a.id);
-            else demoFiles.current.delete(a.id);
           }
           if (session.current) setUsed(await session.current.usedBytes());
         });
       },
     });
   const getFile = useCallback(
-    async (a: Attachment) =>
-      session.current
-        ? session.current.readFile(a)
-        : demoFiles.current.get(a.id),
+    async (a: Attachment) => session.current?.readFile(a),
     [],
   );
   const download = (a: Attachment) =>
@@ -645,47 +627,147 @@ export default function App() {
     (m) => m.channelId === channel?.id && m.pinned,
   );
   const statusText =
-    mode === "demo"
-      ? "Aperçu"
-      : syncStatus === "syncing"
-        ? "Synchronisation"
-        : syncStatus === "synced"
-          ? "À jour sur le cloud"
-          : syncStatus === "pending"
-            ? "Envoi en attente"
-            : syncStatus === "error"
-              ? "À synchroniser"
-              : "Sur cet appareil";
+    syncStatus === "syncing"
+      ? "Synchronisation"
+      : syncStatus === "synced"
+        ? "À jour sur le cloud"
+        : syncStatus === "pending"
+          ? "Envoi en attente"
+          : syncStatus === "error"
+            ? "À synchroniser"
+            : "Sur cet appareil";
 
+  const signOut = () => {
+    if (busyRef.current || syncLock.current) return;
+    lock();
+    setIdentity(null);
+    setMode("login");
+  };
+  const finishSetup = (opts: VaultOptions) =>
+    run(async () => {
+      if (!identity) throw new Error("Connectez-vous avec Google.");
+      let next: VaultSession;
+      if (opts.backup) {
+        const bundle = await unpackBundle(opts.backup);
+        assertVaultOwner(
+          await inspectManifest(opts.password, bundle.manifest),
+          identity.id,
+        );
+        next = await importVault(opts.password, bundle);
+        writeSyncState(null);
+      } else if (opts.open && opts.connection) {
+        next = await openCloudVault(
+          opts.connection,
+          opts.password,
+          identity.id,
+        );
+      } else {
+        const initial = createData(opts.limit);
+        initial.owner = { provider: "google", subject: identity.id };
+        next = await createVault(opts.password, initial);
+        writeSyncState(
+          opts.connection
+            ? { provider: "google", head: null, dirty: true }
+            : null,
+        );
+      }
+      await replaceSession(next, opts.password);
+      setConnection(opts.connection);
+      setModal(null);
+      setSyncStatus(opts.connection ? "pending" : "local");
+    });
+  const setup = (restoreOnly = false) =>
+    identity && (
+      <VaultSetup
+        user={identity}
+        busy={busy}
+        restoreOnly={restoreOnly}
+        onSubmit={finishSetup}
+        onChangeAccount={signOut}
+      />
+    );
   if (mode === "loading")
     return (
-      <div className="lock-screen">
+      <div className="access-screen">
         <Brand />
-        <LoaderCircle className="spin" size={22} />
+        <LoaderCircle size={22} className="spin" />
       </div>
     );
-  if (mode === "locked")
+  if (!identity || mode === "login")
     return (
-      <div className="lock-screen">
-        <div className="lock-panel">
+      <div className="access-screen">
+        <section className="access-card">
           <div className="brand-title">
             <Brand />
             <span>Notes</span>
           </div>
-          <div className="lock-symbol">
-            <LockKeyhole size={30} />
-          </div>
-          <h1>Content de vous retrouver.</h1>
-          <p>Votre espace vous attend.</p>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const form = new FormData(e.currentTarget);
-              const pass = String(form.get("password"));
+          <h1>Votre espace personnel.</h1>
+          <p>Connectez-vous pour commencer.</p>
+          <button
+            className="google-login"
+            disabled={busy || !cloudConfigured("google")}
+            onClick={() =>
               void run(async () => {
-                const s = await unlockVault(pass);
-                await replaceSession(s, pass);
-                setSyncStatus("local");
+                const user = await signInGoogle();
+                setIdentity(user);
+                setMode((await hasVault()) ? "locked" : "setup");
+              })
+            }
+          >
+            {busy ? (
+              <LoaderCircle size={19} className="spin" />
+            ) : (
+              <GoogleMark />
+            )}
+            Continuer avec Google
+          </button>
+          <small>Le choix du stockage vient ensuite.</small>
+          {!cloudConfigured("google") && (
+            <p className="access-error">Connexion Google non configurée.</p>
+          )}
+        </section>
+        {notice && <Toast text={notice} onClose={() => setNotice("")} />}
+      </div>
+    );
+  if (mode === "setup")
+    return (
+      <div className="access-screen">
+        <section className="access-card">
+          <div className="brand-title">
+            <Brand />
+            <span>Notes</span>
+          </div>
+          {setup()}
+        </section>
+        {notice && <Toast text={notice} onClose={() => setNotice("")} />}
+      </div>
+    );
+  if (mode === "locked")
+    return (
+      <div className="access-screen">
+        <section className="access-card">
+          <div className="brand-title">
+            <Brand />
+            <span>Notes</span>
+          </div>
+          <h1>Ouvrir mon coffre</h1>
+          <p>{identity.email}</p>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              const pass = String(
+                new FormData(event.currentTarget).get("password"),
+              );
+              void run(async () => {
+                const next = await unlockVault(pass);
+                try {
+                  assertVaultOwner(next.data, identity.id);
+                  await replaceSession(next, pass);
+                  setSyncStatus("local");
+                } catch (error) {
+                  next.lock();
+                  throw error;
+                }
               });
             }}
           >
@@ -695,59 +777,44 @@ export default function App() {
               name="password"
               type="password"
               autoComplete="current-password"
+              minLength={12}
               required
               autoFocus
-              minLength={12}
             />
-            <button disabled={busy} className="button primary full">
+            <button className="button primary full" disabled={busy}>
               {busy ? (
                 <LoaderCircle size={17} className="spin" />
               ) : (
                 <LockKeyhole size={16} />
               )}
-              Ouvrir mon espace
+              Ouvrir Notes
             </button>
           </form>
           <button
-            className="text-button"
+            className="text-button center"
             onClick={() => setModal("onboarding")}
           >
-            Ouvrir un coffre depuis le cloud
+            Retrouver mon coffre sur Drive
           </button>
-          <small>
-            <ShieldCheck size={14} />
-            Le mot de passe reste sur cet appareil.
-          </small>
-        </div>
-        {notice && <Toast text={notice} onClose={() => setNotice("")} />}{" "}
+          <button
+            className="text-button center"
+            disabled={busy}
+            onClick={signOut}
+          >
+            Changer de compte
+          </button>
+        </section>
         {modal === "onboarding" && (
-          <Onboarding
-            busy={busy}
-            existing
-            onClose={() => setModal(null)}
-            onSubmit={(opts) =>
-              void run(async () => {
-                let conn: CloudConnection | null = null;
-                let s: VaultSession;
-                if (opts.provider) {
-                  conn = await connectCloud(opts.provider);
-                  s = await openCloudVault(conn, opts.password);
-                } else if (opts.backup) {
-                  s = await importVault(
-                    opts.password,
-                    await unpackBundle(opts.backup),
-                  );
-                  writeSyncState(null);
-                } else
-                  throw new Error("Choisissez un cloud ou une sauvegarde.");
-                await replaceSession(s, opts.password);
-                setConnection(conn);
-                setModal(null);
-                setSyncStatus(conn ? "synced" : "local");
-              })
-            }
-          />
+          <Modal
+            title="Retrouver mon coffre"
+            onClose={() => {
+              if (!busy) setModal(null);
+            }}
+          >
+            {setup(true)}
+          </Modal>
         )}
+        {notice && <Toast text={notice} onClose={() => setNotice("")} />}
       </div>
     );
 
@@ -915,7 +982,7 @@ export default function App() {
               M<span />
             </div>
             <div>
-              <strong>Mon espace personnel</strong>
+              <strong>{identity.name}</strong>
               <span>
                 <LockKeyhole size={11} />
                 Coffre privé
@@ -981,18 +1048,6 @@ export default function App() {
             </button>
           </div>
         </header>
-        {mode === "demo" && (
-          <div className="demo-banner">
-            <span>
-              <span className="live-dot" />
-              Vous visitez un espace de démonstration.
-            </span>
-            <button onClick={() => setModal("onboarding")}>
-              Créer mon espace
-              <ArrowRight size={14} />
-            </button>
-          </div>
-        )}
         {syncError && (
           <div className="sync-error">
             <AlertCircle size={17} />
@@ -1049,11 +1104,7 @@ export default function App() {
           <button
             className={`sync-badge ${syncStatus === "error" ? "error" : ""}`}
             onClick={() =>
-              mode === "demo"
-                ? setModal("onboarding")
-                : connection
-                  ? void synchronize()
-                  : setModal("connect")
+              connection ? void synchronize() : setModal("connect")
             }
             disabled={busy || syncStatus === "syncing"}
           >
@@ -1474,44 +1525,14 @@ export default function App() {
         </Modal>
       )}
       {modal === "onboarding" && (
-        <Onboarding
-          busy={busy}
-          onClose={() => setModal(null)}
-          onSubmit={(opts) =>
-            void run(async () => {
-              let conn: CloudConnection | null = null;
-              let s: VaultSession;
-              if (opts.backup) {
-                s = await importVault(
-                  opts.password,
-                  await unpackBundle(opts.backup),
-                );
-                writeSyncState(null);
-              } else if (opts.open && opts.provider) {
-                conn = await connectCloud(opts.provider);
-                s = await openCloudVault(conn, opts.password);
-              } else {
-                if (opts.provider) {
-                  conn = await connectCloud(opts.provider);
-                  if (findHead(await conn.list()))
-                    throw new Error(
-                      "Un coffre existe déjà sur ce compte. Choisissez « Ouvrir un coffre ».",
-                    );
-                }
-                s = await createVault(opts.password, createData(opts.limit));
-                writeSyncState(
-                  conn
-                    ? { provider: conn.provider, head: null, dirty: true }
-                    : null,
-                );
-              }
-              await replaceSession(s, opts.password);
-              setConnection(conn);
-              setModal(null);
-              setSyncStatus(conn ? "pending" : "local");
-            })
-          }
-        />
+        <Modal
+          title="Retrouver mon coffre"
+          onClose={() => {
+            if (!busy) setModal(null);
+          }}
+        >
+          {setup(true)}
+        </Modal>
       )}
       {modal === "channel" && (
         <ChannelForm
@@ -1564,46 +1585,37 @@ export default function App() {
         />
       )}
       {modal === "connect" && (
-        <Modal title="Connecter mon cloud" onClose={() => setModal(null)}>
+        <Modal title="Synchroniser mes notes" onClose={() => setModal(null)}>
           <p className="modal-copy">
-            Vos données chiffrées vous suivent sur vos appareils.
+            Retrouvez vos notes sur votre téléphone avec Google Drive.
           </p>
-          <div className="provider-list">
-            {(["google", "onedrive"] as Provider[]).map((p) => (
-              <button
-                key={p}
-                className="provider-card"
-                disabled={busy}
-                onClick={() =>
-                  void run(async () => {
-                    const conn = await connectCloud(p);
-                    setConnection(conn);
-                    setModal(null);
-                    setSyncStatus("pending");
-                    if (!readSyncState())
-                      writeSyncState({ provider: p, head: null, dirty: true });
-                  })
-                }
-              >
-                <ProviderIcon provider={p} />
-                <div>
-                  <strong>
-                    {p === "google" ? "Google Drive" : "OneDrive"}
-                  </strong>
-                  <span>
-                    {cloudConfigured(p)
-                      ? "Se connecter"
-                      : "Configuration OAuth requise"}
-                  </span>
-                </div>
-                <ChevronRight size={18} />
-              </button>
-            ))}
-          </div>
-          <div className="info-box">
-            <ShieldCheck size={18} />
-            <span>Seul le dossier Notes est accessible à l’application.</span>
-          </div>
+          <button
+            className="provider-card"
+            disabled={busy}
+            onClick={() =>
+              void run(async () => {
+                const conn = await connectCloud("google", identity.id);
+                const nextQuota = await conn.quota();
+                setConnection(conn);
+                setQuota(nextQuota);
+                setModal(null);
+                setSyncStatus("pending");
+                if (!readSyncState())
+                  writeSyncState({
+                    provider: "google",
+                    head: null,
+                    dirty: true,
+                  });
+              })
+            }
+          >
+            <ProviderIcon provider="google" />
+            <div>
+              <strong>Google Drive</strong>
+              <span>Activer la synchronisation</span>
+            </div>
+            <ChevronRight size={18} />
+          </button>
         </Modal>
       )}
       {modal === "settings" && (
@@ -1614,12 +1626,12 @@ export default function App() {
           quota={quota}
           connection={connection}
           busy={busy || syncStatus === "syncing"}
-          demo={mode === "demo"}
           onClose={() => setModal(null)}
           onPreferences={changePreferences}
           onExport={exportBackup}
           onConnect={() => setModal("connect")}
           onLock={lock}
+          onSignOut={signOut}
           onImport={() => {
             setModal(null);
             setConfirm({
@@ -1667,8 +1679,8 @@ export default function App() {
                   setConnection(null);
                   await clearLocalVault();
                   writeSyncState(null);
-                  setData(demoData());
-                  setMode("demo");
+                  setData(createData());
+                  setMode("setup");
                   setUsed(0);
                   setCloudBytes(0);
                   setQuota(null);
@@ -1693,225 +1705,6 @@ function Toast({ text, onClose }: { text: string; onClose: () => void }) {
         <X size={16} />
       </button>
     </div>
-  );
-}
-interface OnboardingOptions {
-  password: string;
-  provider: Provider | null;
-  limit: number;
-  open: boolean;
-  backup?: File;
-}
-function Onboarding({
-  onClose,
-  onSubmit,
-  busy,
-  existing = false,
-}: {
-  onClose: () => void;
-  onSubmit: (o: OnboardingOptions) => void;
-  busy: boolean;
-  existing?: boolean;
-}) {
-  const [provider, setProvider] = useState<Provider | null>(
-      cloudConfigured("google") ? "google" : null,
-    ),
-    [open, setOpen] = useState(existing),
-    [limit, setLimit] = useState(1),
-    [pass, setPass] = useState(""),
-    [repeat, setRepeat] = useState(""),
-    [backup, setBackup] = useState<File | undefined>(),
-    [error, setError] = useState("");
-  return (
-    <Modal
-      title={open ? "Ouvrir un coffre" : "Un espace, rien qu’à vous."}
-      onClose={() => {
-        if (!busy) onClose();
-      }}
-    >
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!open && pass !== repeat) {
-            setError("Les mots de passe sont différents.");
-            return;
-          }
-          if (open && !provider && !backup) {
-            setError("Choisissez un cloud ou une sauvegarde.");
-            return;
-          }
-          onSubmit({
-            password: pass,
-            provider,
-            limit: Math.round(limit * 1024 ** 3),
-            open,
-            backup,
-          });
-        }}
-      >
-        <p className="modal-copy">
-          {open
-            ? "Retrouvez vos salons avec votre compte cloud et le mot de passe du coffre."
-            : "Choisissez où garder vos notes et vos fichiers."}
-        </p>
-        <div className="provider-list">
-          <button
-            type="button"
-            className={`provider-card ${provider === "google" ? "selected" : ""}`}
-            onClick={() => {
-              setProvider("google");
-              setBackup(undefined);
-            }}
-          >
-            <ProviderIcon provider="google" />
-            <div>
-              <strong>
-                Google Drive<span className="recommended">Conseillé</span>
-              </strong>
-              <span>Jusqu’à 15 Go partagés</span>
-            </div>
-            {provider === "google" ? (
-              <Check size={18} />
-            ) : (
-              <span className="radio" />
-            )}
-          </button>
-          <button
-            type="button"
-            className={`provider-card ${provider === "onedrive" ? "selected" : ""}`}
-            onClick={() => {
-              setProvider("onedrive");
-              setBackup(undefined);
-            }}
-          >
-            <ProviderIcon provider="onedrive" />
-            <div>
-              <strong>OneDrive</strong>
-              <span>5 Go avec un compte gratuit</span>
-            </div>
-            {provider === "onedrive" ? (
-              <Check size={18} />
-            ) : (
-              <span className="radio" />
-            )}
-          </button>
-          {!open && (
-            <button
-              type="button"
-              className={`provider-card ${provider === null ? "selected" : ""}`}
-              onClick={() => setProvider(null)}
-            >
-              <HardDrive size={24} />
-              <div>
-                <strong>Sur cet appareil</strong>
-                <span>Connecter un cloud plus tard</span>
-              </div>
-              {provider === null ? (
-                <Check size={18} />
-              ) : (
-                <span className="radio" />
-              )}
-            </button>
-          )}
-        </div>
-        {provider === "google" && (
-          <p className="field-note">
-            Le quota dépend du compte. Google peut demander un numéro valide
-            pour débloquer les 10 Go supplémentaires.
-          </p>
-        )}
-        {provider && !cloudConfigured(provider) && (
-          <p className="inline-warning">
-            <AlertCircle size={15} />
-            Connexion indisponible avant la configuration OAuth du développeur.
-          </p>
-        )}
-        {!open && (
-          <>
-            <label htmlFor="limit">
-              Espace maximum pour Notes<span>{limit} Go</span>
-            </label>
-            <input
-              id="limit"
-              className="range"
-              type="range"
-              min="0.1"
-              max="15"
-              step="0.1"
-              value={limit}
-              onChange={(e) => setLimit(Number(e.target.value))}
-            />
-            <p className="field-note">
-              Modifiable dans les paramètres. Vos autres fichiers gardent leur
-              place.
-            </p>
-          </>
-        )}
-        <label htmlFor="vault-password">Mot de passe du coffre</label>
-        <input
-          id="vault-password"
-          autoComplete={open ? "current-password" : "new-password"}
-          type="password"
-          required
-          minLength={12}
-          maxLength={512}
-          value={pass}
-          onChange={(e) => setPass(e.target.value)}
-        />
-        {!open && (
-          <>
-            <label htmlFor="confirm-password">Confirmer le mot de passe</label>
-            <input
-              id="confirm-password"
-              autoComplete="new-password"
-              type="password"
-              required
-              minLength={12}
-              value={repeat}
-              onChange={(e) => setRepeat(e.target.value)}
-            />
-            <p className="field-note">
-              <LockKeyhole size={12} />
-              12 caractères minimum. Gardez-le en lieu sûr, il ne peut pas être
-              réinitialisé.
-            </p>
-          </>
-        )}
-        {open && (
-          <label className="backup-input">
-            Ou importer une sauvegarde
-            <input
-              type="file"
-              accept=".notes,.flion"
-              onChange={(e) => {
-                setBackup(e.target.files?.[0]);
-                setProvider(null);
-              }}
-            />
-          </label>
-        )}
-        {error && <p className="inline-warning">{error}</p>}
-        <button className="button primary full" disabled={busy}>
-          {busy ? (
-            <LoaderCircle size={17} className="spin" />
-          ) : (
-            <ArrowRight size={17} />
-          )}
-          {open ? "Ouvrir mon espace" : "Créer mon espace"}
-        </button>
-        <button
-          className="text-button center"
-          disabled={busy}
-          type="button"
-          onClick={() => {
-            setOpen(!open);
-            setError("");
-          }}
-        >
-          {open ? "Créer un nouveau coffre" : "J’ai déjà un coffre"}
-        </button>
-      </form>
-    </Modal>
   );
 }
 function ChannelForm({
@@ -2005,12 +1798,12 @@ function SettingsPanel({
   quota,
   connection,
   busy,
-  demo,
   onClose,
   onPreferences,
   onExport,
   onConnect,
   onLock,
+  onSignOut,
   onImport,
   onDisconnect,
   onUpdate,
@@ -2024,12 +1817,12 @@ function SettingsPanel({
   quota: CloudQuota | null;
   connection: CloudConnection | null;
   busy: boolean;
-  demo: boolean;
   onClose: () => void;
   onPreferences: (p: Preferences) => void;
   onExport: () => void;
   onConnect: () => void;
   onLock: () => void;
+  onSignOut: () => void;
   onImport: () => void;
   onDisconnect: () => void;
   onUpdate: () => void;
@@ -2041,8 +1834,9 @@ function SettingsPanel({
     update ? "about" : "appearance",
   );
   const p = data.preferences;
+  const [limitError, setLimitError] = useState("");
   const [limit, setLimit] = useState(
-    String(Number((p.limitBytes / 1024 ** 3).toFixed(2))),
+    String(Number((p.limitBytes / GB).toFixed(3))),
   );
   return (
     <Modal title="Paramètres" wide onClose={onClose}>
@@ -2068,12 +1862,14 @@ function SettingsPanel({
           >
             <ShieldCheck size={16} />À propos
           </button>
-          {!demo && (
-            <button className="lock-setting" onClick={onLock}>
-              <LockKeyhole size={16} />
-              Verrouiller
-            </button>
-          )}
+          <button className="lock-setting" onClick={onLock}>
+            <LockKeyhole size={16} />
+            Verrouiller
+          </button>
+          <button onClick={onSignOut}>
+            <LogOut size={16} />
+            Déconnexion
+          </button>
         </nav>
         <div className="settings-content">
           {tab === "appearance" && (
@@ -2172,12 +1968,22 @@ function SettingsPanel({
                 className="limit-form"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  const n = Number(limit);
-                  if (Number.isFinite(n) && n >= 0.01 && n <= 10000)
+                  try {
                     onPreferences({
                       ...p,
-                      limitBytes: Math.round(n * 1024 ** 3),
+                      limitBytes: validateLimit(
+                        Number(limit),
+                        availableCloudBytes(quota, cloudBytes),
+                      ),
                     });
+                    setLimitError("");
+                  } catch (error) {
+                    setLimitError(
+                      error instanceof Error
+                        ? error.message
+                        : "Limite invalide.",
+                    );
+                  }
                 }}
               >
                 <label htmlFor="storage-limit">Limite Notes en Go</label>
@@ -2185,9 +1991,15 @@ function SettingsPanel({
                   <input
                     id="storage-limit"
                     type="number"
-                    min="0.01"
-                    max="10000"
-                    step="0.01"
+                    min="0.001"
+                    max={
+                      availableCloudBytes(quota, cloudBytes) === undefined
+                        ? undefined
+                        : Math.floor(
+                            availableCloudBytes(quota, cloudBytes)! / 1_000_000,
+                          ) / 1000
+                    }
+                    step="0.001"
                     required
                     value={limit}
                     onChange={(e) => setLimit(e.target.value)}
@@ -2197,16 +2009,17 @@ function SettingsPanel({
                   </button>
                 </div>
               </form>
+              {limitError && (
+                <p className="access-error" role="alert">
+                  {limitError}
+                </p>
+              )}
               <div className="cloud-account">
                 {connection ? (
                   <>
                     <ProviderIcon provider={connection.provider} />
                     <div>
-                      <strong>
-                        {connection.provider === "google"
-                          ? "Google Drive"
-                          : "OneDrive"}
-                      </strong>
+                      <strong>Google Drive</strong>
                       <span>{connection.account}</span>
                     </div>
                     <button className="text-button" onClick={onDisconnect}>
@@ -2218,14 +2031,12 @@ function SettingsPanel({
                     <CloudOff size={22} />
                     <div>
                       <strong>Sur cet appareil</strong>
-                      <span>
-                        Connectez-vous pour retrouver vos notes ailleurs.
-                      </span>
+                      <span>Sans synchronisation sur votre téléphone.</span>
                     </div>
                     <button
                       className="button secondary small"
                       onClick={onConnect}
-                      disabled={demo}
+                      disabled={busy}
                     >
                       Connecter
                     </button>
@@ -2247,7 +2058,7 @@ function SettingsPanel({
                 <button
                   className="button secondary"
                   onClick={onExport}
-                  disabled={busy || demo}
+                  disabled={busy}
                 >
                   <Download size={16} />
                   Exporter une sauvegarde
@@ -2260,7 +2071,7 @@ function SettingsPanel({
                   Ouvrir une sauvegarde ou un cloud
                 </button>
               </div>
-              {!demo && (
+              {
                 <button
                   className="text-button danger-text"
                   onClick={onReset}
@@ -2268,7 +2079,7 @@ function SettingsPanel({
                 >
                   Supprimer la copie de cet appareil
                 </button>
-              )}
+              }
             </>
           )}
           {tab === "about" && (
@@ -2277,7 +2088,7 @@ function SettingsPanel({
                 <Brand />
                 <div>
                   <h3>Notes</h3>
-                  <span className="muted">Version 0.1.1</span>
+                  <span className="muted">Version 0.2.0</span>
                 </div>
               </div>
               <p>
@@ -2291,7 +2102,7 @@ function SettingsPanel({
                 </span>
                 <span>
                   <Cloud size={17} />
-                  Stockage dans votre propre cloud
+                  Google Drive ou stockage local
                 </span>
                 <span>
                   <LockKeyhole size={17} />
@@ -2307,7 +2118,7 @@ function SettingsPanel({
               </div>
               <a
                 className="button secondary"
-                href="https://github.com/arnaudlegoatdesdev/flion"
+                href="https://github.com/arnaudlegoatdesdev/notes"
                 target="_blank"
                 rel="noreferrer"
               >
@@ -2335,10 +2146,6 @@ function SettingsPanel({
                   )}
                 </div>
               )}
-              <p className="field-note">
-                Première version. Le code de chiffrement n’a pas fait l’objet
-                d’un audit indépendant.
-              </p>
             </>
           )}
         </div>

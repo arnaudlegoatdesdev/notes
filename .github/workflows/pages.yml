@@ -31,8 +31,7 @@ jobs:
           BASE_PATH: ${{ steps.pages.outputs.base_path }}
           VITE_PUBLIC_URL: ${{ steps.pages.outputs.base_url }}
           VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
-          VITE_MICROSOFT_CLIENT_ID: ${{ vars.VITE_MICROSOFT_CLIENT_ID }}
-          VITE_GITHUB_REPOSITORY: arnaudlegoatdesdev/flion
+          VITE_GITHUB_REPOSITORY: arnaudlegoatdesdev/notes
         run: npm run build -- --base "$BASE_PATH/"
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:

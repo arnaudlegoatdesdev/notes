@@ -51,6 +51,14 @@ fn provider_config(provider: &str) -> Result<Provider, String> {
     }
 }
 
+fn google_scope(purpose: &str) -> Result<&'static str, String> {
+    match purpose {
+        "login" => Ok("openid email profile"),
+        "drive" => Ok("openid email profile https://www.googleapis.com/auth/drive.appdata"),
+        _ => Err("Type de connexion inconnu.".into()),
+    }
+}
+
 fn random_secret() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
@@ -145,8 +153,11 @@ fn wait_for_callback(listener: TcpListener, state: &str) -> Result<String, Strin
     Err("La connexion a expiré. Relancez-la depuis Notes.".into())
 }
 
-fn authorize(provider_name: String, client_id: String, client_secret: Option<String>) -> Result<NativeToken, String> {
-    let provider = provider_config(&provider_name)?;
+fn authorize(provider_name: String, client_id: String, client_secret: Option<String>, purpose: String) -> Result<NativeToken, String> {
+    let mut provider = provider_config(&provider_name)?;
+    if provider_name == "google" {
+        provider.scope = google_scope(&purpose)?;
+    }
     if client_id.trim().is_empty() || client_id.len() > 2048 || client_secret.as_ref().is_some_and(|secret| secret.len() > 4096) {
         return Err("La connexion à ce cloud n’est pas configurée correctement.".into());
     }
@@ -194,7 +205,7 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
         return Err("Le jeton renvoyé par le cloud est invalide.".into());
     }
     if let Some(scopes) = &token.scope {
-        let required = if provider_name == "google" { "https://www.googleapis.com/auth/drive.appdata" } else { "Files.ReadWrite.AppFolder" };
+        let required = if provider_name == "google" { if purpose == "login" { "openid" } else { "https://www.googleapis.com/auth/drive.appdata" } } else { "Files.ReadWrite.AppFolder" };
         if !scopes.split_whitespace().any(|scope| scope.eq_ignore_ascii_case(required) || scope.eq_ignore_ascii_case(&format!("https://graph.microsoft.com/{required}"))) {
             return Err("L’autorisation d’accès au dossier Notes n’a pas été accordée.".into());
         }
@@ -203,14 +214,22 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
 }
 
 #[tauri::command]
-pub async fn native_authorize(provider: String, client_id: String, client_secret: Option<String>) -> Result<NativeToken, String> {
-    tauri::async_runtime::spawn_blocking(move || authorize(provider, client_id, client_secret))
+pub async fn native_authorize(provider: String, client_id: String, client_secret: Option<String>, purpose: Option<String>) -> Result<NativeToken, String> {
+    tauri::async_runtime::spawn_blocking(move || authorize(provider, client_id, client_secret, purpose.unwrap_or_else(|| "drive".into())))
         .await.map_err(|_| "La connexion au cloud a été interrompue.".to_string())?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_identity_does_not_require_drive_permission() {
+        assert_eq!(google_scope("login").unwrap(), "openid email profile");
+        assert!(!google_scope("login").unwrap().contains("drive.appdata"));
+        assert!(google_scope("drive").unwrap().contains("drive.appdata"));
+        assert!(google_scope("unknown").is_err());
+    }
 
     #[test]
     fn pkce_matches_rfc7636_vector() {

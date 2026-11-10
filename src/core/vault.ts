@@ -236,6 +236,7 @@ function attachment(value: unknown): value is Attachment {
 function validateData(value: unknown): asserts value is VaultData {
   if (!isRecord(value) || value.version !== 1 || !uuid(value.id) || !timestamp(value.createdAt)) invalid();
   if (!Array.isArray(value.channels) || (value.channels.length < 1 || value.channels.length > 10_000) || !Array.isArray(value.messages) || value.messages.length > 100_000 || !isRecord(value.preferences)) invalid();
+  if (value.owner !== undefined && (!isRecord(value.owner) || value.owner.provider !== 'google' || !text(value.owner.subject, 255, false))) invalid();
   const preferences = value.preferences;
   if (!['slate', 'light', 'forest', 'sand', 'plum'].includes(String(preferences.theme)) || !['system', 'inter', 'serif', 'mono'].includes(String(preferences.font)) || !number(preferences.fontSize, 32) || Number(preferences.fontSize) < 12 || !number(preferences.limitBytes) || !preferences.limitBytes) invalid();
   const channelIds = new Set<string>();

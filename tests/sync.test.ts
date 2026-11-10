@@ -225,3 +225,22 @@ describe('opening cloud vaults', () => {
     expect(cloud.reads).toHaveLength(2);
   });
 });
+
+describe('Google vault owner protection',()=>{
+  it('rejects another Google subject before any cloud write',async()=>{
+    const data=seed();data.owner={provider:'google',subject:'person-a'};
+    const session=await createVault(password,data);const cloud=new MemoryCloud();
+    await expect(syncVault(cloud,session,password,'person-b')).rejects.toThrow('autre compte Google');
+    expect(cloud.created).toEqual([]);expect(session.data.owner?.subject).toBe('person-a');
+  });
+  it('rejects a foreign cloud owner before replacing local storage',async()=>{
+    const data=seed();data.owner={provider:'google',subject:'person-a'};
+    const original=await createVault(password,data);const cloud=new MemoryCloud();
+    await syncVault(cloud,original,password,'person-a');
+    await clearLocalVault();writeSyncState(null);
+    await expect(openCloudVault(cloud,password,'person-b')).rejects.toThrow('autre compte Google');
+    await expect(unlockVault(password)).rejects.toThrow('Aucun coffre');
+    const opened=await openCloudVault(cloud,password,'person-a');
+    expect(opened.data.owner?.subject).toBe('person-a');
+  });
+});

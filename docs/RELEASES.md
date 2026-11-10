@@ -6,7 +6,7 @@ Le workflow **Windows**, déclenchable depuis GitHub Actions, exécute les tests
 
 Variables de dépôt utilisées : `VITE_GOOGLE_CLIENT_ID`, `VITE_GOOGLE_DESKTOP_CLIENT_ID`, `VITE_GOOGLE_DESKTOP_CLIENT_SECRET` si nécessaire, `VITE_MICROSOFT_CLIENT_ID`. Elles identifient l’application publique. N’y placez aucun secret de client Web confidentiel.
 
-Un tag `v0.1.1` correspondant à la version dans `src-tauri/tauri.conf.json` crée un brouillon de GitHub Release. Relisez et testez l’installeur avant de publier ce brouillon. Les fichiers d’une release déjà publiée ne sont pas remplacés par le workflow. Incrémentez aussi `package.json` et `src-tauri/Cargo.toml` pour chaque version.
+Un tag `v0.2.0` correspondant à la version dans `src-tauri/tauri.conf.json` crée un brouillon de GitHub Release. Relisez et testez l’installeur avant de publier ce brouillon. Les fichiers d’une release déjà publiée ne sont pas remplacés par le workflow. Incrémentez aussi `package.json` et `src-tauri/Cargo.toml` pour chaque version.
 
 La compilation simple n’ajoute pas de signature Windows Authenticode. Une distribution publique soignée nécessitera un certificat de signature approprié ou une autre méthode de distribution reconnue par Windows. Cette signature est différente de celle qui protège les mises à jour Tauri.
 
@@ -23,7 +23,7 @@ La paire de signature des compilations officielles est configurée dans GitHub A
 Le workflow embarque la clé publique, génère la signature de l’installeur et un `latest.json` pointant vers cette release. L’application consulte exclusivement l’adresse HTTPS :
 
 ```text
-https://github.com/arnaudlegoatdesdev/flion/releases/latest/download/latest.json
+https://github.com/arnaudlegoatdesdev/notes/releases/latest/download/latest.json
 ```
 
 Sans paire de clés complète, aucun manifeste de mise à jour n’est produit. La clé privée ne doit jamais être commitée. Perdre cette clé empêche de continuer les mises à jour des installations qui font confiance à l’ancienne clé. Les utilisateurs d’une première compilation dépourvue de clé devront installer manuellement la première version signée.

@@ -5,5 +5,5 @@ export interface Channel { id: string; name: string; description: string; icon: 
 export interface Attachment { id: string; name: string; mime: string; size: number; storedSize: number; }
 export interface Message { id: string; channelId: string; text: string; createdAt: string; updatedAt?: string; attachments: Attachment[]; pinned: boolean; }
 export interface Preferences { theme: Theme; font: 'system' | 'inter' | 'serif' | 'mono'; fontSize: number; limitBytes: number; }
-export interface VaultData { version: 1; id: string; createdAt: string; channels: Channel[]; messages: Message[]; preferences: Preferences; }
+export interface VaultData { owner?: {provider:'google'; subject:string}; version: 1; id: string; createdAt: string; channels: Channel[]; messages: Message[]; preferences: Preferences; }
 export interface EncryptedBundle { manifest: Uint8Array; files: Record<string, Uint8Array>; }
