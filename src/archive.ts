@@ -10,7 +10,7 @@ const MAX_FILE = 25 * 1024 * 1024 + 36;
 const MAX_ENTRIES = 10_001; // Up to 10,000 attachments plus the manifest.
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 
-function invalid(): never { throw new Error('Sauvegarde Flion invalide ou incomplète.'); }
+function invalid(): never { throw new Error('Sauvegarde Notes invalide ou incomplète.'); }
 function entrySize(name: string, size: number): number {
   if (name !== 'manifest' && !uuid.test(name)) invalid();
   if (!Number.isSafeInteger(size) || size < (name === 'manifest' ? 52 : 36) || size > (name === 'manifest' ? MAX_MANIFEST : MAX_FILE)) invalid();
@@ -73,7 +73,7 @@ export async function unpackBundle(file: File): Promise<EncryptedBundle> {
   if (file.size > MAX) throw new Error('Sauvegarde trop volumineuse (512 Mo maximum).');
   if (file.size < 12) invalid();
   const prefix = new Uint8Array(await file.slice(0, 12).arrayBuffer());
-  if (!magic.every((value, index) => value === prefix[index])) throw new Error('Ce fichier n’est pas une sauvegarde Flion.');
+  if (!magic.every((value, index) => value === prefix[index])) throw new Error('Ce fichier n’est pas une sauvegarde Notes.');
   const count = new DataView(prefix.buffer).getUint32(8, true);
   if (!count || count > MAX_ENTRIES) invalid();
   let offset = 12;

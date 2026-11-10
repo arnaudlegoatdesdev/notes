@@ -53,7 +53,7 @@ export class OneDriveConnection extends TokenConnection implements CloudConnecti
     }
     if (!this.account) throw new CloudError('Microsoft n’a pas renvoyé l’identité de ce compte.', 'provider');
     const folder = await (await this.request(`${GRAPH}/me/drive/special/approot`)).json();
-    if (!folder.id) throw new CloudError('Le dossier Flion n’est pas disponible dans ce OneDrive.', 'provider');
+    if (!folder.id) throw new CloudError('Le dossier Notes n’est pas disponible dans ce OneDrive.', 'provider');
     this.folderId = String(folder.id);
   }
   async list(): Promise<CloudFile[]> {

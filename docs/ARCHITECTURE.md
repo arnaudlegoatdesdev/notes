@@ -2,7 +2,7 @@
 
 ## Une interface, deux modes de distribution
 
-React et TypeScript fournissent les salons, le fil de messages et les réglages. Le navigateur mobile charge ces fichiers statiques. Tauri les embarque dans une application Windows et ajoute un petit noyau Rust pour OAuth et les mises à jour. Aucune base de comptes Flion n’est nécessaire : les droits du compte Google ou Microsoft donnent accès au dossier de l’application.
+React et TypeScript fournissent les salons, le fil de messages et les réglages. Le navigateur mobile charge ces fichiers statiques. Tauri les embarque dans une application Windows et ajoute un petit noyau Rust pour OAuth et les mises à jour. Aucune base de comptes Notes n’est nécessaire : les droits du compte Google ou Microsoft donnent accès au dossier de l’application.
 
 L’hébergement web reste nécessaire, même sans serveur de données. Il doit servir un code fiable sous HTTPS. Le code de l’application reçoit les clés de déchiffrement pendant l’utilisation du coffre : une version compromise pourrait donc accéder au contenu ouvert.
 
@@ -32,4 +32,4 @@ Cette architecture réduit les données détenues par l’auteur. Elle ne rend p
 
 L’import cloud authentifie les objets et les écrit un par un dans un espace temporaire IndexedDB. Le manifeste ne remplace la copie courante qu’après validation de toutes les pièces jointes et vérification de la révision locale. Un transfert interrompu conserve le coffre précédent. Les fichiers locaux inchangés sont réutilisés. La capacité réelle de stockage du navigateur ou de l’appareil reste une limite et les erreurs disque sont traitées.
 
-L’export regroupé en fichier `.flion` est limité à 512 Mio dans cette version. Cette limite ne concerne pas la synchronisation cloud. Les fichiers d’une sauvegarde sont vérifiés avant l’import ; les téléchargements cloud utilisent un chargeur progressif.
+L’export regroupé en fichier `.notes` est limité à 512 Mio dans cette version. Cette limite ne concerne pas la synchronisation cloud. Les fichiers d’une sauvegarde sont vérifiés avant l’import ; les téléchargements cloud utilisent un chargeur progressif.

@@ -13,3 +13,4 @@ src-tauri/target/
 *.tsbuildinfo
 artifacts/
 .sites-runtime/
+*.notes

@@ -75,7 +75,7 @@ jobs:
                 }
               }
             }
-            $path = Join-Path $env:RUNNER_TEMP 'flion-updater.json'
+            $path = Join-Path $env:RUNNER_TEMP 'notes-updater.json'
             $config | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 $path
             "config=$path" >> $env:GITHUB_OUTPUT
             'enabled=true' >> $env:GITHUB_OUTPUT
@@ -91,21 +91,29 @@ jobs:
             npm run tauri -- build
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Vérifier la mise à jour vers Notes
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($version -eq '0.1.1') { & ./.github/test-windows-upgrade.ps1 }
       - name: Préparer les fichiers livrables
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
-          Copy-Item src-tauri/target/release/bundle/nsis/*-setup.exe artifacts/
+          $releaseConfig = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $releaseInstallerName = '{0}_{1}_x64-setup.exe' -f $releaseConfig.productName, $releaseConfig.version
+          $releaseInstallerPath = Join-Path 'src-tauri/target/release/bundle/nsis' $releaseInstallerName
+          Copy-Item $releaseInstallerPath artifacts/
           Copy-Item src-tauri/Cargo.lock artifacts/Cargo.lock
           if ('${{ steps.updater.outputs.enabled }}' -eq 'true') {
-            $installer = Get-ChildItem artifacts/*-setup.exe | Select-Object -First 1
+            $installer = Get-Item (Join-Path 'artifacts' $releaseInstallerName)
             $signaturePath = "$($installer.Name).sig"
             Copy-Item "src-tauri/target/release/bundle/nsis/$signaturePath" artifacts/
             $signature = (Get-Content "artifacts/$signaturePath" -Raw).Trim()
             $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
             $manifest = @{
               version = $version
-              notes = 'Une nouvelle version de Flion est disponible.'
+              notes = 'Une nouvelle version de Notes est disponible.'
               pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
               platforms = @{
                 'windows-x86_64' = @{
@@ -118,7 +126,7 @@ jobs:
           }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: flion-windows
+          name: notes-windows
           path: artifacts/
           if-no-files-found: error
       - name: Créer une version GitHub à relire
@@ -130,15 +138,15 @@ jobs:
           $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Le tag et la version Tauri doivent correspondre.' }
           $notes = @'
-          Version préliminaire de Flion. Développement rapide avec une aide importante de l’IA, indépendant de tout travail scolaire.
+          Version préliminaire de Notes. Développement rapide avec une aide importante de l’IA, indépendant de tout travail scolaire.
 
           Les connexions cloud nécessitent les inscriptions OAuth du mainteneur. Consultez le README pour les limites et l’état des vérifications.
           '@
-          $notesPath = Join-Path $env:RUNNER_TEMP 'flion-release.md'
+          $notesPath = Join-Path $env:RUNNER_TEMP 'notes-release.md'
           $notes | Set-Content -Encoding utf8 $notesPath
           gh release view $env:GITHUB_REF_NAME --json isDraft --jq '.isDraft' 2>$null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $env:GITHUB_REF_NAME --draft --title "Flion $version" --notes-file $notesPath
+            gh release create $env:GITHUB_REF_NAME --draft --title "Notes $version" --notes-file $notesPath
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } else {
             $isDraft = gh release view $env:GITHUB_REF_NAME --json isDraft --jq '.isDraft'

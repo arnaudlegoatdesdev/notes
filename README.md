@@ -1,4 +1,4 @@
-# Flion
+# Notes
 
 Un espace personnel pour garder des mémos, des photos et des fichiers dans des salons, avec le confort d’une messagerie. Une interface web adaptée au téléphone et une application Windows construite avec Tauri.
 
@@ -13,13 +13,13 @@ Un espace personnel pour garder des mémos, des photos et des fichiers dans des 
 - Cinq thèmes, plusieurs polices et réglage de la taille du texte.
 - Même code d’interface pour le web mobile et Windows.
 
-Le nom proposé est **Flion** et le sous-domaine prévu est **notes.flion.fr**. La mise en service de ce domaine dépend de sa configuration DNS et de l’hébergement retenu.
+L’application s’appelle **Notes** et utilise le domaine **https://notes.flion.fr**. L’hébergement peut être transféré vers Cloudflare Pages sans ajouter de serveur de données.
 
 ## État du projet
 
 Cette version est une base fonctionnelle préliminaire, sans audit de sécurité indépendant. Les intégrations cloud sont implémentées, mais doivent être vérifiées avec les inscriptions OAuth du mainteneur avant une ouverture au public. Les connexions désactivées faute de configuration ne simulent aucun compte ni aucune synchronisation.
 
-Le dépôt contient une compilation Windows par GitHub Actions. Les compilations officielles sont configurées pour des mises à jour signées : Flion vérifie la disponibilité d’une version au démarrage et propose son installation. Une compilation locale reste sans mise à jour intégrée tant qu’une vraie paire de clés n’est pas configurée. L’installeur n’est pas signé avec Authenticode ; la signature des mises à jour Tauri est distincte de la signature Windows.
+Le dépôt contient une compilation Windows par GitHub Actions. Les compilations officielles sont configurées pour des mises à jour signées : Notes vérifie la disponibilité d’une version au démarrage et propose son installation. Une compilation locale reste sans mise à jour intégrée tant qu’une vraie paire de clés n’est pas configurée. L’installeur n’est pas signé avec Authenticode ; la signature des mises à jour Tauri est distincte de la signature Windows.
 
 ## Utilisation
 
@@ -31,13 +31,13 @@ L’export en un fichier est limité à **512 Mio** ; cette limite ne s’appliq
 
 ## Stockage et confidentialité
 
-Flion ne nécessite ni serveur applicatif de données ni base de comptes gérés par l’auteur. Il faut un hébergement web statique HTTPS et les services du fournisseur cloud choisi. L’application communique directement avec ce fournisseur.
+Notes ne nécessite ni serveur applicatif de données ni base de comptes gérés par l’auteur. Il faut un hébergement web statique HTTPS et les services du fournisseur cloud choisi. L’application communique directement avec ce fournisseur.
 
 Le contenu et les noms privés sont chiffrés avant l’envoi. Le cloud conserve plusieurs objets opaques plutôt qu’un gros fichier à réécrire à chaque modification. Un éventuel export regroupe le coffre pour la sauvegarde. Le fournisseur peut encore connaître le compte, la taille des objets et les dates d’accès. Le chiffrement ne protège pas un appareil compromis ou une version de l’application malveillante.
 
 Google annonce [jusqu’à 15 Go partagés entre Gmail, Drive et Photos](https://support.google.com/mail/answer/9312312?hl=fr). Une [page officielle Google](https://www.google.com/intl/en_ph/photos/about/) décrit, pour les comptes concernés, 5 Go plus 10 Go après ajout d’un numéro valide. La capacité réelle du compte prévaut. Microsoft propose [5 Go de stockage cloud gratuit](https://support.microsoft.com/en-us/onedrive/microsoft-storage-faqs). Dans les deux cas, les autres usages du compte réduisent l’espace disponible.
 
-Le quota personnel Flion est distinct du quota global du compte. Avec l’accès limité au dossier d’application OneDrive, le quota global peut être indisponible. L’application l’indique et conserve les données locales si le fournisseur refuse un transfert.
+Le quota personnel Notes est distinct du quota global du compte. Avec l’accès limité au dossier d’application OneDrive, le quota global peut être indisponible. L’application l’indique et conserve les données locales si le fournisseur refuse un transfert.
 
 ## Développement
 

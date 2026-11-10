@@ -4,14 +4,14 @@ La distribution destinée aux utilisateurs doit déjà contenir les identifiants
 
 ## Google Drive
 
-1. Créez un projet Google Cloud, activez Google Drive API et configurez l’écran de consentement Flion.
+1. Créez un projet Google Cloud, activez Google Drive API et configurez l’écran de consentement Notes.
 2. Créez un client OAuth de type **Application Web**. Autorisez les origines exactes de développement et de production, par exemple `http://127.0.0.1:5173` et `https://notes.flion.fr`.
 3. Placez son identifiant public dans `VITE_GOOGLE_CLIENT_ID`.
 4. Dans le même projet, créez un client OAuth de type **Application de bureau**. Placez son identifiant dans `VITE_GOOGLE_DESKTOP_CLIENT_ID`.
 5. Si votre client de bureau nécessite le champ `client_secret` pour l’échange du code, placez uniquement le secret de ce client installé dans `VITE_GOOGLE_DESKTOP_CLIENT_SECRET`. Google considère les applications installées comme des clients publics, incapables de garder ce champ confidentiel. Ce n’est pas un secret de client Web et il ne doit pas être utilisé comme preuve d’identité de l’application.
 6. Autorisez la portée `https://www.googleapis.com/auth/drive.appdata`. Tant que le consentement est en mode test, ajoutez les comptes de test nécessaires.
 
-Le web utilise Google Identity Services. Windows ouvre le navigateur système, reçoit le retour sur `127.0.0.1` à un port temporaire et échange le code avec PKCE. Le mot de passe Google n’est jamais demandé par Flion. Les jetons d’accès ne sont pas enregistrés par Flion dans le coffre.
+Le web utilise Google Identity Services. Windows ouvre le navigateur système, reçoit le retour sur `127.0.0.1` à un port temporaire et échange le code avec PKCE. Le mot de passe Google n’est jamais demandé par Notes. Les jetons d’accès ne sont pas enregistrés par Notes dans le coffre.
 
 Les fichiers résident dans le dossier caché de l’application. Réutilisez le même projet Google pour les clients Web et bureau, puis vérifiez le partage du coffre entre les deux avant publication. Changer de projet peut changer l’espace de stockage visible par l’application.
 
@@ -41,20 +41,28 @@ Sur un hébergement autre que Sites, le répertoire `.openai/` n’est pas néce
 
 Testez les deux fournisseurs avec un vrai compte : création depuis Windows, récupération sur téléphone, modification sur les deux appareils, expiration du jeton, connexion interrompue, quota personnel atteint, cloud plein et conflit entre deux modifications hors ligne. Vérifiez que les deux versions accèdent bien au même coffre. Le dépôt et ses tests ne remplacent pas cette validation d’intégration.
 
-## GitHub Pages et notes.flion.fr
+## Déployer sur Cloudflare Pages
 
-Le workflow `Site public` publie `dist/` à chaque modification de `main`. Activez d’abord GitHub Pages dans les paramètres du dépôt avec **GitHub Actions** comme source. Il utilise les variables publiques de dépôt `VITE_GOOGLE_CLIENT_ID` et `VITE_MICROSOFT_CLIENT_ID`. Il n’utilise aucun secret de serveur. En l’absence de ces variables, le site reste utilisable en local mais les connexions cloud correspondantes ne sont pas disponibles.
+Dans **Workers & Pages**, créez un projet Pages et connectez le [dépôt GitHub](https://github.com/arnaudlegoatdesdev/flion). Utilisez les réglages suivants :
 
-Sans domaine personnalisé, le site est servi à `https://arnaudlegoatdesdev.github.io/flion/`. Le workflow adapte automatiquement les chemins d’assets à cette adresse. L’adresse OAuth de retour Microsoft doit alors inclure `/flion/`, et l’origine JavaScript Google doit être `https://arnaudlegoatdesdev.github.io`.
+| Réglage | Valeur |
+| --- | --- |
+| Nom du projet | `notes` ou un nom disponible |
+| Branche de production | `main` |
+| Répertoire racine | racine du dépôt |
+| Preset | React (Vite) |
+| Commande de build | `npm ci && npm run build` |
+| Répertoire de sortie | `dist` |
+| Variable `NODE_VERSION` | `24` |
 
-Pour utiliser le domaine prévu :
+Ajoutez les identifiants publics `VITE_GOOGLE_CLIENT_ID` et `VITE_MICROSOFT_CLIENT_ID` aux variables de compilation, ainsi que `VITE_PUBLIC_URL=https://notes.flion.fr`. Les identifiants de l’application Windows et les clés de signature ne sont pas nécessaires à Pages. Les fonctions cloud restent indisponibles si leurs identifiants ne sont pas configurés.
 
-1. Dans les paramètres Pages du dépôt, ajoutez `notes.flion.fr` comme domaine personnalisé.
-2. Chez le fournisseur DNS de `flion.fr`, créez le CNAME **notes** vers **arnaudlegoatdesdev.github.io**, sans `/flion` dans la cible.
-3. Attendez la validation du domaine et du certificat, puis activez HTTPS obligatoire dans Pages.
-4. Relancez `Site public` pour compiler à la racine du nouveau domaine.
-5. Ajoutez l’origine Google `https://notes.flion.fr` et l’adresse de retour Microsoft `https://notes.flion.fr/`, puis vérifiez les connexions sur ce domaine.
+Après la première publication, testez l’adresse Pages fournie. Dans **Custom domains**, associez ensuite **notes.flion.fr** au projet. Faites remplacer le CNAME du sous-domaine par la cible `pages.dev` indiquée par Cloudflare, puis attendez la validation HTTPS. Gardez les inscriptions OAuth autorisant `https://notes.flion.fr` pour Google et `https://notes.flion.fr/` pour Microsoft. Le fichier `public/_headers` est inclus dans `dist` et fournit la politique d’en-têtes pour Pages.
 
-Un fichier `CNAME` du dépôt est ignoré par les publications Pages utilisant GitHub Actions. La configuration de domaine doit donc passer par les paramètres Pages ou l’API GitHub. Les en-têtes du fichier `_headers` ne sont pas appliqués par GitHub Pages ; pour une politique d’en-têtes HTTP configurable, retenez un hébergeur statique qui la prend en charge.
+Le dépôt peut être préparé sans modifier immédiatement le DNS. La migration du domaine se fait dans Cloudflare après vérification du nouveau déploiement. Une fois cette migration confirmée, l’ancien workflow GitHub Pages peut être désactivé ; les tests et la compilation Windows restent utiles.
 
-Sources : [workflow Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages), [domaine personnalisé](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site).
+Sources : [intégration Git](https://developers.cloudflare.com/pages/get-started/git-integration/), [réglages de build](https://developers.cloudflare.com/pages/configuration/build-configuration/), [version de Node](https://developers.cloudflare.com/pages/configuration/build-image/), [domaine personnalisé](https://developers.cloudflare.com/pages/configuration/custom-domains/).
+
+## Ancien hébergement GitHub Pages
+
+Le workflow `Site public` reste présent pour l’hébergement précédent. Il adapte les chemins d’assets à son adresse de publication. L’adresse sans domaine personnalisé est `https://arnaudlegoatdesdev.github.io/flion/`. Un fichier `CNAME` du dépôt n’est pas utilisé par les déploiements Pages via GitHub Actions. Aucun changement de DNS n’est effectué par la préparation de cette version de Notes.

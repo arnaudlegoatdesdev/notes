@@ -223,7 +223,7 @@ function quotaSizes(data: VaultData, manifest: Uint8Array, fileSizes: Record<str
   if (manifest.byteLength + Object.values(fileSizes).reduce((sum, size) => sum + size, 0) > data.preferences.limitBytes) throw new Error('La limite de stockage du coffre est atteinte. Augmentez-la dans les paramètres ou supprimez des fichiers.');
 }
 
-function invalid(): never { throw new Error('Ce fichier ne contient pas un coffre Flion valide.'); }
+function invalid(): never { throw new Error('Ce fichier ne contient pas un coffre Notes valide.'); }
 function isRecord(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, max: number, empty = true): value is string { return typeof value === 'string' && value.length <= max && (empty || value.length > 0); }
 function number(value: unknown, max = Number.MAX_SAFE_INTEGER): value is number { return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= max; }
@@ -280,7 +280,7 @@ async function derive(passphrase: string, salt: Uint8Array): Promise<CryptoKey> 
 }
 async function encryptManifest(data: VaultData, key: CryptoKey, salt: Uint8Array): Promise<Uint8Array> {
   const bytes = encoder.encode(JSON.stringify(data));
-  if (bytes.byteLength > MAX_MANIFEST_BYTES - 52) throw new Error('Le coffre contient trop de messages pour cette version de Flion.');
+  if (bytes.byteLength > MAX_MANIFEST_BYTES - 52) throw new Error('Le coffre contient trop de messages pour cette version de Notes.');
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   const aad = concat(VAULT_MAGIC, salt);
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, bytes);

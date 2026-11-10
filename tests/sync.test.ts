@@ -106,10 +106,10 @@ describe('immutable synchronization', () => {
     expect((await unlockVault(password)).data.messages[0].attachments).toHaveLength(1);
   });
 
-  it('checks the Flion cloud budget including immutable history before any upload', async () => {
+  it('checks the Notes cloud budget including immutable history before any upload', async () => {
     const session = await createVault(password, seed());
     const cloud = new MemoryCloud(); cloud.add('orphan.flion', new Uint8Array(1), session.data.preferences.limitBytes);
-    await expect(syncVault(cloud, session, password)).rejects.toThrow('limite Flion');
+    await expect(syncVault(cloud, session, password)).rejects.toThrow('limite Notes');
     expect(cloud.created).toEqual([]);
   });
 

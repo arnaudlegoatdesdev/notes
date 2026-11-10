@@ -1,8 +1,8 @@
 [package]
-name = "flion"
-version = "0.1.0"
+name = "notes"
+version = "0.1.1"
 description = "Un espace personnel chiffré, organisé en salons"
-authors = ["Flion contributors"]
+authors = ["Notes contributors"]
 edition = "2021"
 rust-version = "1.90"
 

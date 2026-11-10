@@ -100,7 +100,7 @@ export async function fetchCloudSnapshot(connection: CloudConnection, password: 
   const files = await connection.list();
   cloudSize(files);
   const head = findHead(files);
-  if (!head) throw new Error('Aucun coffre Flion sur ce compte.');
+  if (!head) throw new Error('Aucun coffre Notes sur ce compte.');
   if (expectedHead && !isAncestor(files, expectedHead, head.id)) conflict();
   if (head.file.size < 52 || head.file.size > MAX_MANIFEST_BYTES) throw new Error('Le manifeste cloud est trop volumineux ou invalide.');
   const manifest = await connection.read(head.file.id);
@@ -196,7 +196,7 @@ async function performSync(connection: CloudConnection, session: VaultSession, p
   }
   if (head && !dirty && !missing.length) return { session, quota: await connection.quota(), changed: false, cloudBytes };
   const required = missing.reduce((sum, item) => sum + item.storedSize, local.manifest.byteLength);
-  if (cloudBytes + required > local.data.preferences.limitBytes) throw new Error('La limite Flion serait dépassée. Augmentez-la dans les paramètres. Vos données restent sur cet appareil.');
+  if (cloudBytes + required > local.data.preferences.limitBytes) throw new Error('La limite Notes serait dépassée. Augmentez-la dans les paramètres. Vos données restent sur cet appareil.');
   const quota = await connection.quota();
   if (quota?.total !== undefined && required > quota.total - quota.used) throw new Error('Le cloud est plein. Libérez de l’espace avant de réessayer. Vos données restent sur cet appareil.');
   // Read only missing encrypted attachments, one at a time, after quota checks.

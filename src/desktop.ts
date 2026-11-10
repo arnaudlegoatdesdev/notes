@@ -7,7 +7,7 @@ export async function nativeAuthorize(provider: 'google' | 'onedrive'): Promise<
   const clientId = provider === 'google'
     ? import.meta.env.VITE_GOOGLE_DESKTOP_CLIENT_ID
     : import.meta.env.VITE_MICROSOFT_CLIENT_ID;
-  if (!clientId) throw new Error('La connexion à ce cloud n’est pas encore configurée dans cette version de Flion.');
+  if (!clientId) throw new Error('La connexion à ce cloud n’est pas encore configurée dans cette version de Notes.');
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<NativeToken>('native_authorize', {
     provider, clientId,

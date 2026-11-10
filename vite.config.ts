@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [
     react(),
     {
-      name: "flion-security",
+      name: "notes-security",
       apply: "build",
       transformIndexHtml(html) {
         return html.replace(

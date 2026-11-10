@@ -88,6 +88,8 @@ import {
 import { packSession, unpackBundle } from "./archive";
 import { createData, demoData } from "./seed";
 import { isDesktop, checkForUpdate } from "./desktop";
+import AttachmentImage from "./components/AttachmentImage";
+import ImageViewer from "./components/ImageViewer";
 
 const icons = {
   hash: Hash,
@@ -135,7 +137,7 @@ function Brand({ small = false }: { small?: boolean }) {
   return (
     <span className={`brandmark ${small ? "small" : ""}`} aria-hidden="true">
       <svg viewBox="0 0 32 32">
-        <path d="M9 25V7h16v5H14v3h8v5h-8v5z" fill="currentColor" />
+        <path d="M7 25V7h5l8 11V7h5v18h-5l-8-11v11z" fill="currentColor" />
       </svg>
     </span>
   );
@@ -541,7 +543,8 @@ export default function App() {
           added.push(a);
         } else if (session.current)
           added.push(await session.current.addFile(file));
-        setQueued((q) => [...q, ...added.splice(0)]);
+        const justAdded = added.splice(0);
+        setQueued((q) => [...q, ...justAdded]);
       }
       if (session.current) setUsed(await session.current.usedBytes());
       if (input.current) input.current.value = "";
@@ -590,8 +593,13 @@ export default function App() {
         });
       },
     });
-  const getFile = async (a: Attachment) =>
-    session.current ? session.current.readFile(a) : demoFiles.current.get(a.id);
+  const getFile = useCallback(
+    async (a: Attachment) =>
+      session.current
+        ? session.current.readFile(a)
+        : demoFiles.current.get(a.id),
+    [],
+  );
   const download = (a: Attachment) =>
     void run(async () => {
       const blob = await getFile(a);
@@ -617,7 +625,7 @@ export default function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Flion-${new Date().toISOString().slice(0, 10)}.flion`;
+      a.download = `Notes-${new Date().toISOString().slice(0, 10)}.notes`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
       setNotice("Sauvegarde chiffrée exportée.");
@@ -662,7 +670,7 @@ export default function App() {
         <div className="lock-panel">
           <div className="brand-title">
             <Brand />
-            <span>Flion</span>
+            <span>Notes</span>
           </div>
           <div className="lock-symbol">
             <LockKeyhole size={30} />
@@ -753,7 +761,7 @@ export default function App() {
       <nav className="rail" aria-label="Navigation principale">
         <button
           className="rail-brand"
-          title="Flion"
+          title="Notes"
           onClick={() => {
             setView("messages");
             setQuery("");
@@ -808,7 +816,6 @@ export default function App() {
         <header className="workspace">
           <div>
             <strong>Mon espace</strong>
-            <span>Un peu de tout, juste pour moi.</span>
           </div>
           <button
             className="icon-button mobile-close"
@@ -1108,15 +1115,22 @@ export default function App() {
                   <button
                     key={`${m.id}-${a.id}`}
                     className="file-tile"
-                    onClick={() => download(a)}
+                    onClick={() =>
+                      a.mime.startsWith("image/") ? preview(a) : download(a)
+                    }
+                    aria-label={
+                      a.mime.startsWith("image/")
+                        ? `Agrandir ${a.name}`
+                        : `Télécharger ${a.name}`
+                    }
                   >
-                    <div className="file-tile-icon">
-                      {a.mime.startsWith("image/") ? (
-                        <Image size={30} />
-                      ) : (
+                    {a.mime.startsWith("image/") ? (
+                      <AttachmentImage attachment={a} load={getFile} tile />
+                    ) : (
+                      <div className="file-tile-icon">
                         <FileText size={30} />
-                      )}
-                    </div>
+                      </div>
+                    )}
                     <strong>{a.name}</strong>
                     <span>
                       {bytes(a.size)}
@@ -1241,31 +1255,44 @@ export default function App() {
                         {m.attachments.length > 0 && (
                           <div className="attachment-list">
                             {m.attachments.map((a) => (
-                              <div className="attachment" key={a.id}>
+                              <div
+                                className={
+                                  a.mime.startsWith("image/")
+                                    ? "image-attachment"
+                                    : "attachment"
+                                }
+                                key={a.id}
+                              >
                                 {a.mime.startsWith("image/") ? (
-                                  <Image size={22} />
+                                  <AttachmentImage
+                                    attachment={a}
+                                    load={getFile}
+                                    onOpen={() => preview(a)}
+                                  />
                                 ) : (
                                   <FileText size={22} />
                                 )}
-                                <button
-                                  className="attachment-name"
-                                  onClick={() =>
-                                    a.mime.startsWith("image/")
-                                      ? preview(a)
-                                      : download(a)
-                                  }
-                                >
-                                  <strong>{a.name}</strong>
-                                  <span>{bytes(a.size)}</span>
-                                </button>
-                                <button
-                                  className="icon-button"
-                                  title="Télécharger"
-                                  aria-label={`Télécharger ${a.name}`}
-                                  onClick={() => download(a)}
-                                >
-                                  <Download size={16} />
-                                </button>
+                                <div className="attachment-details">
+                                  <button
+                                    className="attachment-name"
+                                    onClick={() =>
+                                      a.mime.startsWith("image/")
+                                        ? preview(a)
+                                        : download(a)
+                                    }
+                                  >
+                                    <strong>{a.name}</strong>
+                                    <span>{bytes(a.size)}</span>
+                                  </button>
+                                  <button
+                                    className="icon-button"
+                                    title="Télécharger"
+                                    aria-label={`Télécharger ${a.name}`}
+                                    onClick={() => download(a)}
+                                  >
+                                    <Download size={16} />
+                                  </button>
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -1407,12 +1434,6 @@ export default function App() {
           </form>
           <footer className="composer-footer">
             <span>
-              <LockKeyhole size={11} />
-              {mode === "demo"
-                ? "Espace de démonstration, non sauvegardé"
-                : "Chiffré sur votre appareil"}
-            </span>
-            <span>
               Entrée pour envoyer
               <span className="footer-shift">
                 , Maj + Entrée pour une ligne
@@ -1430,11 +1451,11 @@ export default function App() {
       />
       {notice && <Toast text={notice} onClose={() => setNotice("")} />}
       {gallery && (
-        <Modal title={gallery.name} wide onClose={() => setGallery(null)}>
-          <div className="image-preview">
-            <img src={gallery.url} alt={gallery.name} />
-          </div>
-        </Modal>
+        <ImageViewer
+          url={gallery.url}
+          name={gallery.name}
+          onClose={() => setGallery(null)}
+        />
       )}
       {confirm && (
         <Modal title="Confirmer" onClose={() => setConfirm(null)}>
@@ -1581,7 +1602,7 @@ export default function App() {
           </div>
           <div className="info-box">
             <ShieldCheck size={18} />
-            <span>Seul le dossier Flion est accessible à l’application.</span>
+            <span>Seul le dossier Notes est accessible à l’application.</span>
           </div>
         </Modal>
       )}
@@ -1808,7 +1829,7 @@ function Onboarding({
         {!open && (
           <>
             <label htmlFor="limit">
-              Espace maximum pour Flion<span>{limit} Go</span>
+              Espace maximum pour Notes<span>{limit} Go</span>
             </label>
             <input
               id="limit"
@@ -1858,10 +1879,10 @@ function Onboarding({
         )}
         {open && (
           <label className="backup-input">
-            Ou importer une sauvegarde .flion
+            Ou importer une sauvegarde
             <input
               type="file"
-              accept=".flion"
+              accept=".notes,.flion"
               onChange={(e) => {
                 setBackup(e.target.files?.[0]);
                 setProvider(null);
@@ -2128,7 +2149,7 @@ function SettingsPanel({
                 <Cloud size={22} />
                 <div>
                   <strong>{bytes(Math.max(used, cloudBytes))} utilisés</strong>
-                  <span>Limite Flion : {bytes(p.limitBytes)}</span>
+                  <span>Limite Notes : {bytes(p.limitBytes)}</span>
                 </div>
                 <strong>
                   {Math.min(
@@ -2159,7 +2180,7 @@ function SettingsPanel({
                     });
                 }}
               >
-                <label htmlFor="storage-limit">Limite Flion en Go</label>
+                <label htmlFor="storage-limit">Limite Notes en Go</label>
                 <div>
                   <input
                     id="storage-limit"
@@ -2255,8 +2276,8 @@ function SettingsPanel({
               <div className="about-brand">
                 <Brand />
                 <div>
-                  <h3>Flion</h3>
-                  <span className="muted">Version 0.1.0</span>
+                  <h3>Notes</h3>
+                  <span className="muted">Version 0.1.1</span>
                 </div>
               </div>
               <p>
@@ -2274,7 +2295,7 @@ function SettingsPanel({
                 </span>
                 <span>
                   <LockKeyhole size={17} />
-                  Aucune base de données utilisateur chez Flion
+                  Aucune base de données utilisateur chez Notes
                 </span>
               </div>
               <div className="info-box">

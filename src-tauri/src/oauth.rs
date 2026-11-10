@@ -96,12 +96,12 @@ fn parse_callback(target: &str, expected_state: &str) -> Callback {
 
 fn reply(stream: &mut TcpStream, accepted: bool) {
     let (status, text) = if accepted {
-        ("200 OK", "Retournez dans Flion pour terminer la connexion. Vous pouvez fermer cet onglet.")
+        ("200 OK", "Retournez dans Notes pour terminer la connexion. Vous pouvez fermer cet onglet.")
     } else {
-        ("400 Bad Request", "Cette réponse de connexion n’est pas valide. Retournez dans Flion.")
+        ("400 Bad Request", "Cette réponse de connexion n’est pas valide. Retournez dans Notes.")
     };
     // Never reflect OAuth query parameters or tokens into the browser response.
-    let body = format!("<!doctype html><html lang=\"fr\"><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Flion</title><h1>Flion</h1><p>{text}</p></html>");
+    let body = format!("<!doctype html><html lang=\"fr\"><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Notes</title><h1>Notes</h1><p>{text}</p></html>");
     let response = format!("HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n{body}", body.len());
     let _ = stream.write_all(response.as_bytes());
 }
@@ -142,7 +142,7 @@ fn wait_for_callback(listener: TcpListener, state: &str) -> Result<String, Strin
             Err(_) => return Err("Le retour de connexion local a échoué.".into()),
         }
     }
-    Err("La connexion a expiré. Relancez-la depuis Flion.".into())
+    Err("La connexion a expiré. Relancez-la depuis Notes.".into())
 }
 
 fn authorize(provider_name: String, client_id: String, client_secret: Option<String>) -> Result<NativeToken, String> {
@@ -196,7 +196,7 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
     if let Some(scopes) = &token.scope {
         let required = if provider_name == "google" { "https://www.googleapis.com/auth/drive.appdata" } else { "Files.ReadWrite.AppFolder" };
         if !scopes.split_whitespace().any(|scope| scope.eq_ignore_ascii_case(required) || scope.eq_ignore_ascii_case(&format!("https://graph.microsoft.com/{required}"))) {
-            return Err("L’autorisation d’accès au dossier Flion n’a pas été accordée.".into());
+            return Err("L’autorisation d’accès au dossier Notes n’a pas été accordée.".into());
         }
     }
     Ok(NativeToken { access_token: token.access_token, expires_in: token.expires_in })
