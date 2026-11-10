@@ -1,0 +1,28 @@
+[package]
+name = "flion"
+version = "0.1.0"
+description = "Un espace personnel chiffré, organisé en salons"
+authors = ["Flion contributors"]
+edition = "2021"
+rust-version = "1.90"
+
+[lib]
+name = "flion_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
+subtle = "2"
+url = "2"
+open = "5"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+.env
+.env.*
+!.env.example
+.openai/sites-config.local.json
+.openai/*.local.*
+.DS_Store
+*.log
+*.flion

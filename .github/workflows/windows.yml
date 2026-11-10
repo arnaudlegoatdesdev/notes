@@ -1,0 +1,138 @@
+name: Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      signed_updater:
+        description: Produire aussi les mises à jour signées (clés requises)
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+      VITE_GOOGLE_DESKTOP_CLIENT_ID: ${{ vars.VITE_GOOGLE_DESKTOP_CLIENT_ID }}
+      VITE_GOOGLE_DESKTOP_CLIENT_SECRET: ${{ vars.VITE_GOOGLE_DESKTOP_CLIENT_SECRET }}
+      VITE_MICROSOFT_CLIENT_ID: ${{ vars.VITE_MICROSOFT_CLIENT_ID }}
+      VITE_PUBLIC_URL: https://notes.flion.fr
+      VITE_GITHUB_REPOSITORY: arnaudlegoatdesdev/flion
+      FLION_UPDATER_PUBLIC_KEY: ${{ vars.FLION_UPDATER_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: '1.90.0'
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Tester le code natif
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      - name: Préparer les mises à jour signées
+        id: updater
+        shell: pwsh
+        run: |
+          $hasPublic = -not [string]::IsNullOrWhiteSpace($env:FLION_UPDATER_PUBLIC_KEY)
+          $hasPrivate = -not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)
+          $requested = '${{ inputs.signed_updater }}' -eq 'true'
+          if (($hasPublic -ne $hasPrivate) -or ($requested -and -not ($hasPublic -and $hasPrivate))) {
+            throw 'Configurez la clé publique et la clé privée de signature avant une compilation avec mises à jour.'
+          }
+          if ($hasPublic -and $hasPrivate) {
+            $config = @{
+              bundle = @{ createUpdaterArtifacts = $true }
+              plugins = @{
+                updater = @{
+                  pubkey = $env:FLION_UPDATER_PUBLIC_KEY
+                  endpoints = @('https://github.com/arnaudlegoatdesdev/flion/releases/latest/download/latest.json')
+                  windows = @{ installMode = 'passive' }
+                }
+              }
+            }
+            $path = Join-Path $env:RUNNER_TEMP 'flion-updater.json'
+            $config | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 $path
+            "config=$path" >> $env:GITHUB_OUTPUT
+            'enabled=true' >> $env:GITHUB_OUTPUT
+          } else {
+            'enabled=false' >> $env:GITHUB_OUTPUT
+          }
+      - name: Compiler l’installeur Windows
+        shell: pwsh
+        run: |
+          if ('${{ steps.updater.outputs.enabled }}' -eq 'true') {
+            npm run tauri -- build --config '${{ steps.updater.outputs.config }}'
+          } else {
+            npm run tauri -- build
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Préparer les fichiers livrables
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Copy-Item src-tauri/target/release/bundle/nsis/*-setup.exe artifacts/
+          Copy-Item src-tauri/Cargo.lock artifacts/Cargo.lock
+          if ('${{ steps.updater.outputs.enabled }}' -eq 'true') {
+            $installer = Get-ChildItem artifacts/*-setup.exe | Select-Object -First 1
+            $signaturePath = "$($installer.Name).sig"
+            Copy-Item "src-tauri/target/release/bundle/nsis/$signaturePath" artifacts/
+            $signature = (Get-Content "artifacts/$signaturePath" -Raw).Trim()
+            $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+            $manifest = @{
+              version = $version
+              notes = 'Une nouvelle version de Flion est disponible.'
+              pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+              platforms = @{
+                'windows-x86_64' = @{
+                  signature = $signature
+                  url = "https://github.com/arnaudlegoatdesdev/flion/releases/download/v$version/$($installer.Name)"
+                }
+              }
+            }
+            $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 artifacts/latest.json
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: flion-windows
+          path: artifacts/
+          if-no-files-found: error
+      - name: Créer une version GitHub à relire
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Le tag et la version Tauri doivent correspondre.' }
+          $notes = @'
+          Version préliminaire de Flion. Développement rapide avec une aide importante de l’IA, indépendant de tout travail scolaire.
+
+          Les connexions cloud nécessitent les inscriptions OAuth du mainteneur. Consultez le README pour les limites et l’état des vérifications.
+          '@
+          $notesPath = Join-Path $env:RUNNER_TEMP 'flion-release.md'
+          $notes | Set-Content -Encoding utf8 $notesPath
+          gh release view $env:GITHUB_REF_NAME --json isDraft --jq '.isDraft' 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:GITHUB_REF_NAME --draft --title "Flion $version" --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            $isDraft = gh release view $env:GITHUB_REF_NAME --json isDraft --jq '.isDraft'
+            if ($isDraft -ne 'true') { throw 'Une version publiée existe déjà. Publiez un nouveau tag au lieu de remplacer ses fichiers.' }
+          }
+          $assets = Get-ChildItem artifacts | Where-Object { $_.Name -ne 'Cargo.lock' } | ForEach-Object { $_.FullName }
+          gh release upload $env:GITHUB_REF_NAME @assets --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

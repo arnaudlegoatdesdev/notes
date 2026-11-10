@@ -1,0 +1,1 @@
+{"name": "Flion", "short_name": "Flion", "lang": "fr", "start_url": "./", "display": "standalone", "background_color": "#191b20", "theme_color": "#191b20", "icons": [{"src": "./favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]}
