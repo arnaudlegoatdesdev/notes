@@ -4,11 +4,13 @@ export const isDesktop =
 export interface NativeToken {
   accessToken: string;
   expiresIn: number;
+  scope?: string;
 }
 
 export async function nativeAuthorize(
   provider: "google" | "onedrive",
   purpose: "login" | "drive" = "drive",
+  subject?: string,
 ): Promise<NativeToken> {
   if (!isDesktop)
     throw new Error("Cette connexion est réservée à l’application Windows.");
@@ -25,6 +27,7 @@ export async function nativeAuthorize(
     provider,
     clientId,
     purpose,
+    loginHint: subject || null,
     clientSecret:
       provider === "google"
         ? import.meta.env.VITE_GOOGLE_DESKTOP_CLIENT_SECRET || null

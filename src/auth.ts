@@ -1,5 +1,5 @@
 import { isDesktop, nativeAuthorize } from "./desktop";
-import { authorizeGoogle, readGoogleIdentity } from "./cloud/google";
+import { authorizeGoogle, readGoogleIdentity, rememberGoogleGrant } from "./cloud/google";
 import type { VaultData } from "./core/types";
 export interface GoogleUser {
   id: string;
@@ -14,7 +14,9 @@ export async function signInGoogle(): Promise<GoogleUser> {
   const credentials = isDesktop
     ? await nativeAuthorize("google", "login")
     : await authorizeGoogle(clientId, "login");
-  return readGoogleIdentity(credentials.accessToken);
+  const user = await readGoogleIdentity(credentials.accessToken);
+  rememberGoogleGrant(credentials, user.id);
+  return user;
 }
 export function assertVaultOwner(data: VaultData, subject: string): void {
   if (

@@ -16,6 +16,7 @@ use url::Url;
 pub struct NativeToken {
     access_token: String,
     expires_in: u64,
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -153,7 +154,7 @@ fn wait_for_callback(listener: TcpListener, state: &str) -> Result<String, Strin
     Err("La connexion a expiré. Relancez-la depuis Notes.".into())
 }
 
-fn authorize(provider_name: String, client_id: String, client_secret: Option<String>, purpose: String) -> Result<NativeToken, String> {
+fn authorize(provider_name: String, client_id: String, client_secret: Option<String>, purpose: String, login_hint: Option<String>) -> Result<NativeToken, String> {
     let mut provider = provider_config(&provider_name)?;
     if provider_name == "google" {
         provider.scope = google_scope(&purpose)?;
@@ -177,7 +178,9 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
         .append_pair("state", &state)
         .append_pair("code_challenge", &pkce_challenge(&verifier))
         .append_pair("code_challenge_method", "S256")
-        .append_pair("prompt", "select_account");
+        .append_pair("include_granted_scopes", "true");
+    if purpose == "login" { url.query_pairs_mut().append_pair("prompt", "select_account"); }
+    if let Some(hint) = login_hint.filter(|hint| !hint.is_empty() && hint.len() <= 255) { url.query_pairs_mut().append_pair("login_hint", &hint); }
     // Fixed HTTPS provider URLs are opened by the OS, never inside the WebView.
     open::that(url.as_str()).map_err(|_| "Impossible d’ouvrir votre navigateur. Vérifiez le navigateur par défaut de Windows.".to_string())?;
     let code = wait_for_callback(listener, &state)?;
@@ -210,12 +213,12 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
             return Err("L’autorisation d’accès au dossier Notes n’a pas été accordée.".into());
         }
     }
-    Ok(NativeToken { access_token: token.access_token, expires_in: token.expires_in })
+    Ok(NativeToken { access_token: token.access_token, expires_in: token.expires_in, scope: token.scope })
 }
 
 #[tauri::command]
-pub async fn native_authorize(provider: String, client_id: String, client_secret: Option<String>, purpose: Option<String>) -> Result<NativeToken, String> {
-    tauri::async_runtime::spawn_blocking(move || authorize(provider, client_id, client_secret, purpose.unwrap_or_else(|| "drive".into())))
+pub async fn native_authorize(provider: String, client_id: String, client_secret: Option<String>, purpose: Option<String>, login_hint: Option<String>) -> Result<NativeToken, String> {
+    tauri::async_runtime::spawn_blocking(move || authorize(provider, client_id, client_secret, purpose.unwrap_or_else(|| "drive".into()), login_hint))
         .await.map_err(|_| "La connexion au cloud a été interrompue.".to_string())?
 }
 

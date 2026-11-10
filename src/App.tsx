@@ -61,6 +61,7 @@ import type {
   Provider,
   Theme,
   VaultData,
+  AccessRecord,
 } from "./core/types";
 import {
   createVault,
@@ -71,6 +72,7 @@ import {
   type VaultSession,
   inspectManifest,
   MIN_PASSPHRASE_LENGTH,
+  localManifest,
 } from "./core/vault";
 import {
   CloudError,
@@ -86,7 +88,8 @@ import {
   readSyncState,
   syncVault,
   writeSyncState,
-} from "./sync";
+  SyncFailure,
+} from "./sync-v2";
 import { packSession, unpackBundle } from "./archive";
 import { createData } from "./seed";
 import { isDesktop, checkForUpdate } from "./desktop";
@@ -94,6 +97,26 @@ import AttachmentImage from "./components/AttachmentImage";
 import ImageViewer from "./components/ImageViewer";
 import VaultSetup, { type VaultOptions } from "./components/VaultSetup";
 import GoogleMark from "./components/GoogleMark";
+import GoogleDriveIcon from "./components/GoogleDriveIcon";
+import { driveGrant, forgetGoogleGrant } from "./cloud/google";
+import {
+  keyBytes,
+  localAccess,
+  makeAccess,
+  migrateAccess,
+  publishAccess,
+  readCloudAccess,
+  rememberStorage,
+  saveAccess,
+  storageChoice,
+} from "./access";
+import { mergeVault, stampChanges } from "./merge";
+import {
+  APP_VERSION,
+  isWindowsBrowser,
+  latestWindowsDownload,
+  type WindowsDownload,
+} from "./windows-install";
 import { signInGoogle, assertVaultOwner, type GoogleUser } from "./auth";
 import { availableCloudBytes, formatBytes, validateLimit, GB } from "./quota";
 
@@ -142,13 +165,7 @@ function Brand({ small = false }: { small?: boolean }) {
   );
 }
 function ProviderIcon({ provider: _provider }: { provider: Provider }) {
-  return (
-    <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m8.2 2 4 7-6.4 11H.5z" fill="#2f9e60" />
-      <path d="m8.2 2 7.6 0L23.5 15h-8z" fill="#f4c34f" />
-      <path d="M23.5 15 19.7 22H4.3l3.9-7z" fill="#5c8fdf" />
-    </svg>
-  );
+  return <GoogleDriveIcon />;
 }
 function Modal({
   title,
@@ -244,7 +261,9 @@ export default function App() {
     "login" | "setup" | "vault" | "locked" | "loading"
   >("loading");
   const session = useRef<VaultSession | null>(null);
-  const password = useRef("");
+  const access = useRef<AccessRecord | null>(null);
+  const migrationConnection = useRef<CloudConnection | null>(null);
+  const syncDone = useRef<Promise<void> | null>(null);
   const [identity, setIdentity] = useState<GoogleUser | null>(null);
   const [active, setActive] = useState("");
   const [view, setView] = useState<"messages" | "files" | "pins">("messages");
@@ -278,6 +297,34 @@ export default function App() {
     version: string;
     install: () => Promise<void>;
   } | null>(null);
+  const [windowsDownload, setWindowsDownload] =
+    useState<WindowsDownload | null>(null);
+  const [installOffer, setInstallOffer] = useState(false);
+  useEffect(() => {
+    if (!identity || !isWindowsBrowser(navigator, isDesktop)) return;
+    let canceled = false;
+    void latestWindowsDownload()
+      .then((result) => {
+        if (canceled || !result) return;
+        setWindowsDownload(result);
+        try {
+          setInstallOffer(
+            localStorage.getItem("notes.install.dismissed") !== result.version,
+          );
+        } catch {
+          setInstallOffer(true);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      canceled = true;
+    };
+  }, [identity?.id]);
+  const dismissInstall = () => {
+    setInstallOffer(false);
+    if (windowsDownload)
+      localStorage.setItem("notes.install.dismissed", windowsDownload.version);
+  };
   const updateChecked = useRef(false);
   useEffect(() => {
     if (isDesktop && !updateChecked.current) {
@@ -306,15 +353,19 @@ export default function App() {
       (Math.max(used, cloudBytes) / data.preferences.limitBytes) * 100,
     ),
   );
-  const replaceSession = async (s: VaultSession, pass?: string) => {
-    if (!identity) {
+  const replaceSession = async (
+    s: VaultSession,
+    record?: AccessRecord,
+    user = identity,
+  ) => {
+    if (!user) {
       s.lock();
       throw new Error("Connectez-vous avec Google.");
     }
-    assertVaultOwner(s.data, identity.id);
+    assertVaultOwner(s.data, user.id);
     if (session.current && session.current !== s) session.current.lock();
     session.current = s;
-    if (pass !== undefined) password.current = pass;
+    if (record) access.current = record;
     setData(s.data);
     setUsed(await s.usedBytes());
     setMode("vault");
@@ -376,10 +427,11 @@ export default function App() {
     if (gallery) return () => URL.revokeObjectURL(gallery.url);
   }, [gallery]);
   const run = async (action: () => Promise<void>) => {
-    if (busyRef.current || syncLock.current) return;
+    if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
     try {
+      if (syncDone.current) await syncDone.current;
       await action();
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "Une erreur est survenue.");
@@ -389,12 +441,30 @@ export default function App() {
     }
   };
   const commit = async (next: VaultData) => {
-    if (!session.current) throw new Error("Le coffre est verrouillé.");
+    if (!session.current || !access.current)
+      throw new Error("Connectez-vous à Notes.");
     if (!identity) throw new Error("Connectez-vous avec Google.");
     assertVaultOwner(next, identity.id);
+    const live = session.current.data;
+    for (const added of next.messages.filter(
+      (m) => !data.messages.some((old) => old.id === m.id),
+    )) {
+      if (
+        !live.channels.some((c) => c.id === added.channelId) &&
+        !next.channels.some(
+          (c) =>
+            c.id === added.channelId &&
+            !data.channels.some((old) => old.id === c.id),
+        )
+      )
+        throw new Error(
+          "Ce salon a été supprimé sur un autre appareil. Votre brouillon est conservé.",
+        );
+    }
+    const merged = mergeVault(data, live, stampChanges(data, next));
     await session.current.save({
-      ...next,
-      owner: next.owner || { provider: "google", subject: identity.id },
+      ...merged,
+      owner: merged.owner || { provider: "google", subject: identity.id },
     });
     markDirty();
     setData(session.current.data);
@@ -411,38 +481,52 @@ export default function App() {
         syncBlock.current
       )
         return;
+      if (!access.current || !identity) return;
       syncLock.current = true;
+      let resolveSync!: () => void;
+      syncDone.current = new Promise<void>((resolve) => {
+        resolveSync = resolve;
+      });
       setSyncStatus("syncing");
       setSyncError("");
       setNeedsReconnect(false);
       try {
+        await publishAccess(conn, access.current);
         const result = await syncVault(
           conn,
           session.current,
-          password.current,
-          identity?.id,
+          keyBytes(access.current),
+          identity.id,
         );
         session.current = result.session;
         setData(result.session.data);
         setUsed(await result.session.usedBytes());
         setCloudBytes(result.cloudBytes);
         setQuota(result.quota);
-        setSyncStatus("synced");
+        setSyncStatus(result.pending ? "pending" : "synced");
       } catch (e) {
+        if (e instanceof SyncFailure) {
+          session.current = e.session;
+          setData(e.session.data);
+          setUsed(await e.session.usedBytes());
+        }
         setSyncStatus("error");
-        setNeedsReconnect(e instanceof CloudError && e.code === "auth");
+        const cause = e instanceof SyncFailure ? e.cause : e;
+        setNeedsReconnect(cause instanceof CloudError && cause.code === "auth");
         setSyncError(
           e instanceof Error ? e.message : "Synchronisation indisponible.",
         );
       } finally {
         syncLock.current = false;
+        syncDone.current = null;
+        resolveSync();
       }
     },
     [connection, identity?.id],
   );
   useEffect(() => {
     if (connection && syncStatus === "pending" && !busy && !syncBlock.current) {
-      const t = setTimeout(() => void synchronize(), 1800);
+      const t = setTimeout(() => void synchronize(), 650);
       return () => clearTimeout(t);
     }
   }, [
@@ -465,7 +549,10 @@ export default function App() {
     const onOnline = () => void synchronize();
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("online", onOnline);
-    const timer = setInterval(() => void synchronize(), 60000);
+    const timer = setInterval(
+      () => document.visibilityState === "visible" && void synchronize(),
+      5000,
+    );
     return () => {
       document.removeEventListener("visibilitychange", onFocus);
       window.removeEventListener("online", onOnline);
@@ -474,12 +561,12 @@ export default function App() {
   }, [connection, synchronize]);
   const lock = () => {
     if (busyRef.current || syncLock.current) {
-      setNotice("Attendez la fin de l’opération avant de verrouiller.");
+      setNotice("Attendez la fin de l’opération avant de vous déconnecter.");
       return;
     }
     session.current?.lock();
     session.current = null;
-    password.current = "";
+    access.current = null;
     void connection?.disconnect();
     setConnection(null);
     setData(createData());
@@ -496,25 +583,6 @@ export default function App() {
     setSyncStatus("local");
     setMode("locked");
   };
-  useEffect(() => {
-    if (mode !== "vault") return;
-    let timer: ReturnType<typeof setTimeout>;
-    const touch = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        if (!busyRef.current && !syncLock.current) lock();
-        else touch();
-      }, 15 * 60000);
-    };
-    touch();
-    window.addEventListener("pointerdown", touch);
-    window.addEventListener("keydown", touch);
-    return () => {
-      clearTimeout(timer);
-      window.removeEventListener("pointerdown", touch);
-      window.removeEventListener("keydown", touch);
-    };
-  }, [mode, connection]);
   const choose = (id: string) => {
     setActive(id);
     setView("messages");
@@ -523,7 +591,7 @@ export default function App() {
     setEditing(null);
   };
   const upload = (files: FileList | null) => {
-    if (!files?.length) return;
+    if (!channel || !files?.length) return;
     void run(async () => {
       const added: Attachment[] = [];
       for (const file of Array.from(files)) {
@@ -546,7 +614,7 @@ export default function App() {
     });
   const send = (e?: FormEvent) => {
     e?.preventDefault();
-    if (!draft.trim() && !queued.length) return;
+    if (!channel || (!draft.trim() && !queued.length)) return;
     void run(async () => {
       const m: Message = {
         id: crypto.randomUUID(),
@@ -604,14 +672,17 @@ export default function App() {
     void run(async () => {
       if (!session.current)
         throw new Error("Créez votre coffre pour exporter une sauvegarde.");
-      const blob = await packSession(session.current);
+      const blob = await packSession(
+        session.current,
+        access.current || undefined,
+      );
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = `Notes-${new Date().toISOString().slice(0, 10)}.notes`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
-      setNotice("Sauvegarde chiffrée exportée.");
+      setNotice("Sauvegarde exportée. Gardez ce fichier privé.");
     });
   const changePreferences = (preferences: Preferences) =>
     void run(() => commit({ ...data, preferences }));
@@ -636,43 +707,152 @@ export default function App() {
           ? "Envoi en attente"
           : syncStatus === "error"
             ? "À synchroniser"
-            : "Sur cet appareil";
+            : "";
 
   const signOut = () => {
     if (busyRef.current || syncLock.current) return;
     lock();
+    migrationConnection.current = null;
+    forgetGoogleGrant();
     setIdentity(null);
     setMode("login");
+  };
+  const resumeAccount = async (user: GoogleUser) => {
+    const manifest = await localManifest();
+    let local: VaultSession | null = null;
+    if (manifest) {
+      for (const record of await localAccess(user.id)) {
+        try {
+          const info = await inspectManifest(keyBytes(record), manifest);
+          assertVaultOwner(info, user.id);
+          if (info.id !== record.vaultId) continue;
+          local = await unlockVault(keyBytes(record));
+          await replaceSession(local, record, user);
+          break;
+        } catch {
+          /* A saved key can belong to an older imported space. */
+        }
+      }
+    }
+    if (storageChoice(user.id) !== "local" && driveGrant(user.id)) {
+      const conn = await connectCloud("google", user.id);
+      try {
+        const files = await conn.list(),
+          record = await readCloudAccess(conn, user.id, files);
+        if (record) {
+          await saveAccess(record);
+          if (!local) {
+            const next = manifest
+              ? await unlockVault(keyBytes(record))
+              : await openCloudVault(conn, keyBytes(record), user.id);
+            if (next.data.id !== record.vaultId) {
+              next.lock();
+              throw new Error(
+                "La copie locale appartient à un autre espace. Exportez-la avant de continuer.",
+              );
+            }
+            await replaceSession(next, record, user);
+          } else if (local.data.id !== record.vaultId)
+            throw new Error(
+              "Drive contient un autre espace. La copie locale est conservée.",
+            );
+          rememberStorage(user.id, "drive");
+          setConnection(conn);
+          setQuota(await conn.quota());
+          setSyncStatus("pending");
+          return;
+        }
+        if (findHead(files)) {
+          migrationConnection.current = conn;
+          if (local) {
+            setConnection(conn);
+            setSyncStatus("pending");
+            return;
+          }
+          setMode("locked");
+          return;
+        }
+        if (local && storageChoice(user.id) === "drive") {
+          setConnection(conn);
+          setSyncStatus("pending");
+          return;
+        }
+        await conn.disconnect();
+      } catch (e) {
+        await conn.disconnect();
+        if (local) {
+          setNotice(e instanceof Error ? e.message : "Drive indisponible.");
+          return;
+        }
+        throw e;
+      }
+    }
+    if (local) return;
+    setMode(manifest ? "locked" : "setup");
   };
   const finishSetup = (opts: VaultOptions) =>
     run(async () => {
       if (!identity) throw new Error("Connectez-vous avec Google.");
-      let next: VaultSession;
+      let next: VaultSession,
+        record = opts.access;
+      if (record && record.owner !== identity.id)
+        throw new Error("Cet espace appartient à un autre compte Google.");
       if (opts.backup) {
         const bundle = await unpackBundle(opts.backup);
-        assertVaultOwner(
-          await inspectManifest(opts.password, bundle.manifest),
-          identity.id,
-        );
-        next = await importVault(opts.password, bundle);
+        record =
+          bundle.access ||
+          (await migrateAccess(
+            identity.id,
+            opts.password || "",
+            bundle.manifest,
+          ));
+        if (record.owner !== identity.id)
+          throw new Error(
+            "Cette sauvegarde appartient à un autre compte Google.",
+          );
+        const info = await inspectManifest(keyBytes(record), bundle.manifest);
+        assertVaultOwner(info, identity.id);
+        if (info.id !== record.vaultId)
+          throw new Error("La clé de cette sauvegarde est invalide.");
+        await saveAccess(record);
+        next = await importVault(keyBytes(record), bundle);
         writeSyncState(null);
       } else if (opts.open && opts.connection) {
-        next = await openCloudVault(
-          opts.connection,
-          opts.password,
-          identity.id,
-        );
+        if (!record) {
+          const head = findHead(await opts.connection.list());
+          if (!head) throw new Error("Aucune note sur Drive.");
+          record = await migrateAccess(
+            identity.id,
+            opts.password || "",
+            await opts.connection.read(head.file.id),
+          );
+        }
+        await saveAccess(record);
+        if (await hasVault()) {
+          next = await unlockVault(keyBytes(record));
+          if (next.data.id !== record.vaultId) {
+            next.lock();
+            throw new Error(
+              "Drive contient un autre espace. Exportez d’abord votre copie locale.",
+            );
+          }
+        } else
+          next = await openCloudVault(
+            opts.connection,
+            keyBytes(record),
+            identity.id,
+          );
       } else {
         const initial = createData(opts.limit);
         initial.owner = { provider: "google", subject: identity.id };
-        next = await createVault(opts.password, initial);
-        writeSyncState(
-          opts.connection
-            ? { provider: "google", head: null, dirty: true }
-            : null,
-        );
+        record = makeAccess(identity.id, initial.id);
+        await saveAccess(record);
+        next = await createVault(keyBytes(record), initial);
+        writeSyncState(null);
       }
-      await replaceSession(next, opts.password);
+      await replaceSession(next, record);
+      migrationConnection.current = null;
+      rememberStorage(identity.id, opts.connection ? "drive" : "local");
       setConnection(opts.connection);
       setModal(null);
       setSyncStatus(opts.connection ? "pending" : "local");
@@ -711,7 +891,12 @@ export default function App() {
               void run(async () => {
                 const user = await signInGoogle();
                 setIdentity(user);
-                setMode((await hasVault()) ? "locked" : "setup");
+                try {
+                  await resumeAccount(user);
+                } catch (e) {
+                  setMode((await hasVault()) ? "locked" : "setup");
+                  throw e;
+                }
               })
             }
           >
@@ -722,7 +907,7 @@ export default function App() {
             )}
             Continuer avec Google
           </button>
-          <small>Le choix du stockage vient ensuite.</small>
+
           {!cloudConfigured("google") && (
             <p className="access-error">Connexion Google non configurée.</p>
           )}
@@ -751,7 +936,8 @@ export default function App() {
             <Brand />
             <span>Notes</span>
           </div>
-          <h1>Ouvrir mon coffre</h1>
+          <h1>Mettre à jour mon espace</h1>
+          <p>Saisissez l’ancien mot de passe une dernière fois.</p>
           <p>{identity.email}</p>
           <form
             onSubmit={(event) => {
@@ -760,19 +946,28 @@ export default function App() {
                 new FormData(event.currentTarget).get("password"),
               );
               void run(async () => {
-                const next = await unlockVault(pass);
-                try {
-                  assertVaultOwner(next.data, identity.id);
-                  await replaceSession(next, pass);
-                  setSyncStatus("local");
-                } catch (error) {
-                  next.lock();
-                  throw error;
+                const conn = migrationConnection.current;
+                const manifest =
+                  (await localManifest()) ||
+                  (conn
+                    ? await conn.read(findHead(await conn.list())!.file.id)
+                    : null);
+                if (!manifest)
+                  throw new Error("Retrouvez vos notes sur Google Drive.");
+                const record = await migrateAccess(identity.id, pass, manifest);
+                const next = (await hasVault())
+                  ? await unlockVault(keyBytes(record))
+                  : await openCloudVault(conn!, keyBytes(record), identity.id);
+                await replaceSession(next, record);
+                if (conn) {
+                  setConnection(conn);
+                  rememberStorage(identity.id, "drive");
                 }
+                setSyncStatus(conn ? "pending" : "local");
               });
             }}
           >
-            <label htmlFor="unlock">Mot de passe du coffre</label>
+            <label htmlFor="unlock">Ancien mot de passe du coffre</label>
             <input
               id="unlock"
               name="password"
@@ -795,7 +990,7 @@ export default function App() {
             className="text-button center"
             onClick={() => setModal("onboarding")}
           >
-            Retrouver mon coffre sur Drive
+            Retrouver mes notes sur Drive
           </button>
           <button
             className="text-button center"
@@ -986,7 +1181,7 @@ export default function App() {
               <strong>{identity.name}</strong>
               <span>
                 <LockKeyhole size={11} />
-                Coffre privé
+                Espace personnel
               </span>
             </div>
             <Settings size={17} />
@@ -1004,7 +1199,7 @@ export default function App() {
               <Menu size={22} />
             </button>
             <ChannelIcon size={22} />
-            <h1>{query ? "Recherche" : channel?.name}</h1>
+            <h1>{query ? "Recherche" : channel?.name || "Notes"}</h1>
             <span className="header-description">{channel?.description}</span>
           </div>
           <div className="header-actions">
@@ -1040,8 +1235,9 @@ export default function App() {
               className="icon-button"
               title="Modifier le salon"
               aria-label="Modifier le salon"
+              disabled={!channel}
               onClick={() => {
-                setChannelEdit(channel);
+                setChannelEdit(channel || null);
                 setModal("channel");
               }}
             >
@@ -1057,7 +1253,7 @@ export default function App() {
               onClick={() =>
                 needsReconnect ? setModal("connect") : void synchronize()
               }
-              disabled={busy || syncStatus === "syncing"}
+              disabled={busy}
             >
               {needsReconnect ? "Reconnecter" : "Réessayer"}
             </button>
@@ -1102,31 +1298,51 @@ export default function App() {
               </button>
             )}
           </div>
-          <button
-            className={`sync-badge ${syncStatus === "error" ? "error" : ""}`}
-            onClick={() =>
-              connection ? void synchronize() : setModal("connect")
-            }
-            disabled={busy || syncStatus === "syncing"}
-          >
-            {syncStatus === "syncing" ? (
-              <LoaderCircle size={13} className="spin" />
-            ) : syncStatus === "synced" ? (
-              <CheckCheck size={14} />
-            ) : syncStatus === "error" ? (
-              <AlertCircle size={14} />
-            ) : (
-              <span className="tiny-dot" />
-            )}
-            {statusText}
-          </button>
+          {syncStatus !== "local" && (
+            <button
+              className={`sync-badge ${syncStatus === "error" ? "error" : ""}`}
+              onClick={() =>
+                connection ? void synchronize() : setModal("connect")
+              }
+              disabled={busy || syncStatus === "syncing"}
+            >
+              {syncStatus === "syncing" ? (
+                <LoaderCircle size={13} className="spin" />
+              ) : syncStatus === "synced" ? (
+                <CheckCheck size={14} />
+              ) : syncStatus === "error" ? (
+                <AlertCircle size={14} />
+              ) : (
+                <span className="tiny-dot" />
+              )}
+              {statusText}
+            </button>
+          )}
         </div>
         <section
           className="conversation"
           aria-label={view === "files" ? "Fichiers" : "Messages"}
           onClick={() => menu && setMenu(null)}
         >
-          {!query && view === "messages" && (
+          {!channel && !query && (
+            <div className="empty-workspace">
+              <div className="welcome-icon">
+                <MessageSquare size={32} strokeWidth={1.5} />
+              </div>
+              <h2>Créez votre premier salon</h2>
+              <button
+                className="button primary"
+                onClick={() => {
+                  setChannelEdit(null);
+                  setModal("channel");
+                }}
+              >
+                <Plus size={17} />
+                Créer un salon
+              </button>
+            </div>
+          )}
+          {!!channel && !query && view === "messages" && (
             <div className="channel-welcome">
               <div className="welcome-icon">
                 <ChannelIcon size={32} strokeWidth={1.5} />
@@ -1137,7 +1353,7 @@ export default function App() {
               <button
                 className="text-button"
                 onClick={() => {
-                  setChannelEdit(channel);
+                  setChannelEdit(channel || null);
                   setModal("channel");
                 }}
               >
@@ -1160,339 +1376,341 @@ export default function App() {
               <span>{visible.length} dans ce salon</span>
             </div>
           )}
-          {view === "files" ? (
-            <div className="file-grid">
-              {visible.flatMap((m) =>
-                m.attachments.map((a) => (
-                  <button
-                    key={`${m.id}-${a.id}`}
-                    className="file-tile"
-                    onClick={() =>
-                      a.mime.startsWith("image/") ? preview(a) : download(a)
-                    }
-                    aria-label={
-                      a.mime.startsWith("image/")
-                        ? `Agrandir ${a.name}`
-                        : `Télécharger ${a.name}`
-                    }
-                  >
-                    {a.mime.startsWith("image/") ? (
-                      <AttachmentImage attachment={a} load={getFile} tile />
-                    ) : (
-                      <div className="file-tile-icon">
-                        <FileText size={30} />
-                      </div>
-                    )}
-                    <strong>{a.name}</strong>
-                    <span>
-                      {bytes(a.size)}
-                      <Download size={14} />
-                    </span>
-                  </button>
-                )),
-              )}
-              {!visible.some((m) => m.attachments.length) && (
-                <div className="empty-state">
-                  <FolderOpen size={34} />
-                  <h3>Aucun fichier ici.</h3>
-                  <p>Ajoutez une pièce jointe dans un message.</p>
-                  <button
-                    className="button secondary"
-                    onClick={() => {
-                      setView("messages");
-                      input.current?.click();
-                    }}
-                  >
-                    <Plus size={15} />
-                    Ajouter un fichier
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="messages">
-              {visible.map((m, index) => {
-                const prior = visible[index - 1];
-                const separator =
-                  !prior || day(prior.createdAt) !== day(m.createdAt);
-                return (
-                  <div key={m.id}>
-                    {separator && (
-                      <div className="date-divider">
-                        <span>{day(m.createdAt)}</span>
-                      </div>
-                    )}
-                    <article className={`message ${m.pinned ? "pinned" : ""}`}>
-                      <div className="message-avatar">M</div>
-                      <div className="message-body">
-                        <div className="message-meta">
-                          <strong>Moi</strong>
-                          <time dateTime={m.createdAt}>
-                            {time(m.createdAt)}
-                          </time>
-                          {m.updatedAt && (
-                            <span className="edited">modifié</span>
-                          )}
-                          {m.pinned && (
-                            <span className="pin-label">
-                              <Pin size={11} />
-                              Épinglé
-                            </span>
-                          )}
-                          {query && (
-                            <button
-                              className="result-channel"
-                              onClick={() => choose(m.channelId)}
+          {(channel || query) &&
+            (view === "files" ? (
+              <div className="file-grid">
+                {visible.flatMap((m) =>
+                  m.attachments.map((a) => (
+                    <button
+                      key={`${m.id}-${a.id}`}
+                      className="file-tile"
+                      onClick={() =>
+                        a.mime.startsWith("image/") ? preview(a) : download(a)
+                      }
+                      aria-label={
+                        a.mime.startsWith("image/")
+                          ? `Agrandir ${a.name}`
+                          : `Télécharger ${a.name}`
+                      }
+                    >
+                      {a.mime.startsWith("image/") ? (
+                        <AttachmentImage attachment={a} load={getFile} tile />
+                      ) : (
+                        <div className="file-tile-icon">
+                          <FileText size={30} />
+                        </div>
+                      )}
+                      <strong>{a.name}</strong>
+                      <span>
+                        {bytes(a.size)}
+                        <Download size={14} />
+                      </span>
+                    </button>
+                  )),
+                )}
+                {!visible.some((m) => m.attachments.length) && (
+                  <div className="empty-state">
+                    <FolderOpen size={34} />
+                    <h3>Aucun fichier ici.</h3>
+                    <p>Ajoutez une pièce jointe dans un message.</p>
+                    <button
+                      className="button secondary"
+                      onClick={() => {
+                        setView("messages");
+                        input.current?.click();
+                      }}
+                    >
+                      <Plus size={15} />
+                      Ajouter un fichier
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="messages">
+                {visible.map((m, index) => {
+                  const prior = visible[index - 1];
+                  const separator =
+                    !prior || day(prior.createdAt) !== day(m.createdAt);
+                  return (
+                    <div key={m.id}>
+                      {separator && (
+                        <div className="date-divider">
+                          <span>{day(m.createdAt)}</span>
+                        </div>
+                      )}
+                      <article
+                        className={`message ${m.pinned ? "pinned" : ""}`}
+                      >
+                        <div className="message-avatar">M</div>
+                        <div className="message-body">
+                          <div className="message-meta">
+                            <strong>Moi</strong>
+                            <time dateTime={m.createdAt}>
+                              {time(m.createdAt)}
+                            </time>
+                            {m.updatedAt && (
+                              <span className="edited">modifié</span>
+                            )}
+                            {m.pinned && (
+                              <span className="pin-label">
+                                <Pin size={11} />
+                                Épinglé
+                              </span>
+                            )}
+                            {query && (
+                              <button
+                                className="result-channel"
+                                onClick={() => choose(m.channelId)}
+                              >
+                                #
+                                {
+                                  data.channels.find(
+                                    (c) => c.id === m.channelId,
+                                  )?.name
+                                }
+                              </button>
+                            )}
+                          </div>
+                          {editing === m.id ? (
+                            <form
+                              className="edit-form"
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                void run(async () => {
+                                  await commit({
+                                    ...data,
+                                    messages: data.messages.map((x) =>
+                                      x.id === m.id
+                                        ? {
+                                            ...x,
+                                            text: editText,
+                                            updatedAt: new Date().toISOString(),
+                                          }
+                                        : x,
+                                    ),
+                                  });
+                                  setEditing(null);
+                                });
+                              }}
                             >
-                              #
-                              {
-                                data.channels.find((c) => c.id === m.channelId)
-                                  ?.name
-                              }
-                            </button>
+                              <textarea
+                                aria-label="Modifier le message"
+                                value={editText}
+                                onChange={(e) => setEditText(e.target.value)}
+                                autoFocus
+                              />
+                              <div>
+                                <button
+                                  className="button secondary small"
+                                  type="button"
+                                  onClick={() => setEditing(null)}
+                                >
+                                  Annuler
+                                </button>
+                                <button
+                                  className="button primary small"
+                                  disabled={
+                                    busy ||
+                                    (!editText.trim() && !m.attachments.length)
+                                  }
+                                >
+                                  Enregistrer
+                                </button>
+                              </div>
+                            </form>
+                          ) : (
+                            <div className="message-text">
+                              <Text text={m.text} />
+                            </div>
+                          )}
+                          {m.attachments.length > 0 && (
+                            <div className="attachment-list">
+                              {m.attachments.map((a) => (
+                                <div
+                                  className={
+                                    a.mime.startsWith("image/")
+                                      ? "image-attachment"
+                                      : "attachment"
+                                  }
+                                  key={a.id}
+                                >
+                                  {a.mime.startsWith("image/") ? (
+                                    <AttachmentImage
+                                      attachment={a}
+                                      load={getFile}
+                                      onOpen={() => preview(a)}
+                                    />
+                                  ) : (
+                                    <FileText size={22} />
+                                  )}
+                                  <div className="attachment-details">
+                                    <button
+                                      className="attachment-name"
+                                      onClick={() =>
+                                        a.mime.startsWith("image/")
+                                          ? preview(a)
+                                          : download(a)
+                                      }
+                                    >
+                                      <strong>{a.name}</strong>
+                                      <span>{bytes(a.size)}</span>
+                                    </button>
+                                    <button
+                                      className="icon-button"
+                                      title="Télécharger"
+                                      aria-label={`Télécharger ${a.name}`}
+                                      onClick={() => download(a)}
+                                    >
+                                      <Download size={16} />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
                           )}
                         </div>
-                        {editing === m.id ? (
-                          <form
-                            className="edit-form"
-                            onSubmit={(e) => {
-                              e.preventDefault();
-                              void run(async () => {
-                                await commit({
+                        <div className="message-tools">
+                          <button
+                            className="icon-button"
+                            title="Modifier"
+                            aria-label="Modifier le message"
+                            onClick={() => {
+                              setEditing(m.id);
+                              setEditText(m.text);
+                            }}
+                          >
+                            <Pencil size={15} />
+                          </button>
+                          <button
+                            className="icon-button"
+                            title={m.pinned ? "Désépingler" : "Épingler"}
+                            aria-label={
+                              m.pinned
+                                ? "Désépingler le message"
+                                : "Épingler le message"
+                            }
+                            onClick={() =>
+                              void run(() =>
+                                commit({
                                   ...data,
                                   messages: data.messages.map((x) =>
                                     x.id === m.id
-                                      ? {
-                                          ...x,
-                                          text: editText,
-                                          updatedAt: new Date().toISOString(),
-                                        }
+                                      ? { ...x, pinned: !x.pinned }
                                       : x,
                                   ),
-                                });
-                                setEditing(null);
-                              });
-                            }}
+                                }),
+                              )
+                            }
                           >
-                            <textarea
-                              aria-label="Modifier le message"
-                              value={editText}
-                              onChange={(e) => setEditText(e.target.value)}
-                              autoFocus
-                            />
-                            <div>
-                              <button
-                                className="button secondary small"
-                                type="button"
-                                onClick={() => setEditing(null)}
-                              >
-                                Annuler
-                              </button>
-                              <button
-                                className="button primary small"
-                                disabled={
-                                  busy ||
-                                  (!editText.trim() && !m.attachments.length)
-                                }
-                              >
-                                Enregistrer
-                              </button>
-                            </div>
-                          </form>
-                        ) : (
-                          <div className="message-text">
-                            <Text text={m.text} />
-                          </div>
-                        )}
-                        {m.attachments.length > 0 && (
-                          <div className="attachment-list">
-                            {m.attachments.map((a) => (
-                              <div
-                                className={
-                                  a.mime.startsWith("image/")
-                                    ? "image-attachment"
-                                    : "attachment"
-                                }
-                                key={a.id}
-                              >
-                                {a.mime.startsWith("image/") ? (
-                                  <AttachmentImage
-                                    attachment={a}
-                                    load={getFile}
-                                    onOpen={() => preview(a)}
-                                  />
-                                ) : (
-                                  <FileText size={22} />
-                                )}
-                                <div className="attachment-details">
-                                  <button
-                                    className="attachment-name"
-                                    onClick={() =>
-                                      a.mime.startsWith("image/")
-                                        ? preview(a)
-                                        : download(a)
-                                    }
-                                  >
-                                    <strong>{a.name}</strong>
-                                    <span>{bytes(a.size)}</span>
-                                  </button>
-                                  <button
-                                    className="icon-button"
-                                    title="Télécharger"
-                                    aria-label={`Télécharger ${a.name}`}
-                                    onClick={() => download(a)}
-                                  >
-                                    <Download size={16} />
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <div className="message-tools">
-                        <button
-                          className="icon-button"
-                          title="Modifier"
-                          aria-label="Modifier le message"
-                          onClick={() => {
-                            setEditing(m.id);
-                            setEditText(m.text);
-                          }}
-                        >
-                          <Pencil size={15} />
-                        </button>
-                        <button
-                          className="icon-button"
-                          title={m.pinned ? "Désépingler" : "Épingler"}
-                          aria-label={
-                            m.pinned
-                              ? "Désépingler le message"
-                              : "Épingler le message"
-                          }
-                          onClick={() =>
-                            void run(() =>
-                              commit({
-                                ...data,
-                                messages: data.messages.map((x) =>
-                                  x.id === m.id
-                                    ? { ...x, pinned: !x.pinned }
-                                    : x,
-                                ),
-                              }),
-                            )
-                          }
-                        >
-                          <Pin size={15} />
-                        </button>
-                        <button
-                          className="icon-button danger-hover"
-                          title="Supprimer"
-                          aria-label="Supprimer le message"
-                          onClick={() => removeMessage(m)}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
-                    </article>
+                            <Pin size={15} />
+                          </button>
+                          <button
+                            className="icon-button danger-hover"
+                            title="Supprimer"
+                            aria-label="Supprimer le message"
+                            onClick={() => removeMessage(m)}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </article>
+                    </div>
+                  );
+                })}
+                {!visible.length && (
+                  <div className="empty-state">
+                    <MessageSquare size={32} />
+                    <h3>
+                      {query
+                        ? "Rien trouvé."
+                        : view === "pins"
+                          ? "Rien d’épinglé pour le moment."
+                          : "Le début de quelque chose."}
+                    </h3>
+                    <p>
+                      {query
+                        ? "Essayez un autre mot."
+                        : view === "pins"
+                          ? "Gardez les messages utiles à portée de main."
+                          : "Écrivez votre première note dans ce salon."}
+                    </p>
                   </div>
-                );
-              })}
-              {!visible.length && (
-                <div className="empty-state">
-                  <MessageSquare size={32} />
-                  <h3>
-                    {query
-                      ? "Rien trouvé."
-                      : view === "pins"
-                        ? "Rien d’épinglé pour le moment."
-                        : "Le début de quelque chose."}
-                  </h3>
-                  <p>
-                    {query
-                      ? "Essayez un autre mot."
-                      : view === "pins"
-                        ? "Gardez les messages utiles à portée de main."
-                        : "Écrivez votre première note dans ce salon."}
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            ))}
           <div ref={end} />
         </section>
-        <div className="composer-wrap">
-          {queued.length > 0 && (
-            <div className="queued-files">
-              {queued.map((a) => (
-                <div key={a.id}>
-                  <Paperclip size={13} />
-                  <span>{a.name}</span>
-                  <button
-                    aria-label={`Retirer ${a.name}`}
-                    onClick={() => removeQueued(a)}
-                  >
-                    <X size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <form className="composer" onSubmit={send}>
-            <button
-              className="attach-button"
-              type="button"
-              title="Ajouter un fichier"
-              aria-label="Ajouter un fichier"
-              disabled={busy || syncStatus === "syncing"}
-              onClick={() => input.current?.click()}
-            >
-              <Plus size={21} />
-            </button>
-            <textarea
-              aria-label={`Écrire dans ${channel?.name}`}
-              placeholder={`Écrire dans #${channel?.name}`}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              rows={1}
-              maxLength={100000}
-              onKeyDown={(e) => {
-                if (
-                  e.key === "Enter" &&
-                  !e.shiftKey &&
-                  !e.nativeEvent.isComposing
-                ) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-            />
-            <button
-              className="send-button"
-              title="Envoyer"
-              aria-label="Envoyer le message"
-              disabled={
-                busy ||
-                syncStatus === "syncing" ||
-                (!draft.trim() && !queued.length)
-              }
-            >
-              {busy ? (
-                <LoaderCircle size={18} className="spin" />
-              ) : (
-                <ArrowUp size={20} />
-              )}
-            </button>
-          </form>
-          <footer className="composer-footer">
-            <span>
-              Entrée pour envoyer
-              <span className="footer-shift">
-                , Maj + Entrée pour une ligne
+        {!!channel && (
+          <div className="composer-wrap">
+            {queued.length > 0 && (
+              <div className="queued-files">
+                {queued.map((a) => (
+                  <div key={a.id}>
+                    <Paperclip size={13} />
+                    <span>{a.name}</span>
+                    <button
+                      aria-label={`Retirer ${a.name}`}
+                      onClick={() => removeQueued(a)}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <form className="composer" onSubmit={send}>
+              <button
+                className="attach-button"
+                type="button"
+                title="Ajouter un fichier"
+                aria-label="Ajouter un fichier"
+                disabled={busy || syncStatus === "syncing"}
+                onClick={() => input.current?.click()}
+              >
+                <Plus size={21} />
+              </button>
+              <textarea
+                aria-label={`Écrire dans ${channel?.name}`}
+                placeholder={`Écrire dans #${channel?.name}`}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                rows={1}
+                maxLength={100000}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    !e.nativeEvent.isComposing
+                  ) {
+                    e.preventDefault();
+                    send();
+                  }
+                }}
+              />
+              <button
+                className="send-button"
+                title="Envoyer"
+                aria-label="Envoyer le message"
+                disabled={busy || (!draft.trim() && !queued.length)}
+              >
+                {busy ? (
+                  <LoaderCircle size={18} className="spin" />
+                ) : (
+                  <ArrowUp size={20} />
+                )}
+              </button>
+            </form>
+            <footer className="composer-footer">
+              <span>
+                Entrée pour envoyer
+                <span className="footer-shift">
+                  , Maj + Entrée pour une ligne
+                </span>
               </span>
-            </span>
-          </footer>
-        </div>
+            </footer>
+          </div>
+        )}
       </main>
       <input
         ref={input}
@@ -1502,6 +1720,26 @@ export default function App() {
         onChange={(e) => upload(e.target.files)}
       />
       {notice && <Toast text={notice} onClose={() => setNotice("")} />}
+      {installOffer && windowsDownload && (
+        <Modal title="Installer Notes" onClose={dismissInstall}>
+          <p className="modal-copy">
+            Gardez vos notes à portée de main sur Windows.
+          </p>
+          <div className="modal-actions">
+            <button className="button secondary" onClick={dismissInstall}>
+              Plus tard
+            </button>
+            <a
+              className="button primary"
+              href={windowsDownload.url}
+              onClick={dismissInstall}
+            >
+              <Download size={17} />
+              Installer Notes
+            </a>
+          </div>
+        </Modal>
+      )}
       {gallery && (
         <ImageViewer
           url={gallery.url}
@@ -1519,7 +1757,11 @@ export default function App() {
             >
               Annuler
             </button>
-            <button className="button danger" onClick={confirm.action}>
+            <button
+              className="button danger"
+              disabled={busy}
+              onClick={confirm.action}
+            >
               Confirmer
             </button>
           </div>
@@ -1552,7 +1794,7 @@ export default function App() {
             })
           }
           onDelete={
-            channelEdit && data.channels.length > 1
+            channelEdit
               ? () => {
                   const id = channelEdit.id;
                   setModal(null);
@@ -1576,7 +1818,9 @@ export default function App() {
                           await session.current?.removeFile(a.id);
                         if (session.current)
                           setUsed(await session.current.usedBytes());
-                        setActive(data.channels.find((c) => c.id !== id)!.id);
+                        setActive(
+                          data.channels.find((c) => c.id !== id)?.id || "",
+                        );
                       });
                     },
                   });
@@ -1596,6 +1840,10 @@ export default function App() {
             onClick={() =>
               void run(async () => {
                 const conn = await connectCloud("google", identity.id);
+                if (!access.current)
+                  throw new Error("Reconnectez-vous à Notes.");
+                await publishAccess(conn, access.current);
+                rememberStorage(identity.id, "drive");
                 const nextQuota = await conn.quota();
                 setConnection(conn);
                 setQuota(nextQuota);
@@ -1631,7 +1879,6 @@ export default function App() {
           onPreferences={changePreferences}
           onExport={exportBackup}
           onConnect={() => setModal("connect")}
-          onLock={lock}
           onSignOut={signOut}
           onImport={() => {
             setModal(null);
@@ -1644,6 +1891,7 @@ export default function App() {
             });
           }}
           onDisconnect={() => {
+            rememberStorage(identity.id, "local");
             void connection?.disconnect();
             setConnection(null);
             setSyncStatus("local");
@@ -1675,7 +1923,7 @@ export default function App() {
                 void run(async () => {
                   session.current?.lock();
                   session.current = null;
-                  password.current = "";
+                  access.current = null;
                   await connection?.disconnect();
                   setConnection(null);
                   await clearLocalVault();
@@ -1778,6 +2026,7 @@ function ChannelForm({
             <button
               type="button"
               className="text-button danger-text push-left"
+              disabled={busy}
               onClick={onDelete}
             >
               <Trash2 size={15} />
@@ -1803,7 +2052,6 @@ function SettingsPanel({
   onPreferences,
   onExport,
   onConnect,
-  onLock,
   onSignOut,
   onImport,
   onDisconnect,
@@ -1822,7 +2070,6 @@ function SettingsPanel({
   onPreferences: (p: Preferences) => void;
   onExport: () => void;
   onConnect: () => void;
-  onLock: () => void;
   onSignOut: () => void;
   onImport: () => void;
   onDisconnect: () => void;
@@ -1862,10 +2109,6 @@ function SettingsPanel({
             onClick={() => setTab("about")}
           >
             <ShieldCheck size={16} />À propos
-          </button>
-          <button className="lock-setting" onClick={onLock}>
-            <LockKeyhole size={16} />
-            Verrouiller
           </button>
           <button onClick={onSignOut}>
             <LogOut size={16} />
@@ -2031,7 +2274,7 @@ function SettingsPanel({
                   <>
                     <CloudOff size={22} />
                     <div>
-                      <strong>Sur cet appareil</strong>
+                      <strong>Stockage local</strong>
                       <span>Sans synchronisation sur votre téléphone.</span>
                     </div>
                     <button
@@ -2054,6 +2297,9 @@ function SettingsPanel({
               <p className="field-note">
                 Les versions chiffrées conservées dans le cloud comptent dans la
                 limite. Supprimer un message le retire de la version courante.
+              </p>
+              <p className="field-note">
+                La sauvegarde contient la clé. Gardez-la privée.
               </p>
               <div className="settings-buttons">
                 <button
@@ -2089,7 +2335,7 @@ function SettingsPanel({
                 <Brand />
                 <div>
                   <h3>Notes</h3>
-                  <span className="muted">Version 0.2.1</span>
+                  <span className="muted">Version {APP_VERSION}</span>
                 </div>
               </div>
               <p>

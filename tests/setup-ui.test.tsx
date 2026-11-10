@@ -31,24 +31,11 @@ describe("storage choice after Google sign-in", () => {
     ).toBeTruthy();
     expect(screen.queryByText("OneDrive")).toBeNull();
     fireEvent.click(
-      screen.getByRole("button", { name: /Cet appareil uniquement/ }),
+      screen.getByRole("button", { name: /Stockage local/ }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Continuer en local" }));
-    await screen.findByLabelText("Mot de passe du coffre");
-    expect(
-      screen.getByLabelText("Mot de passe du coffre").getAttribute("minlength"),
-    ).toBe("8");
-    expect(
-      screen
-        .getByLabelText("Confirmer le mot de passe")
-        .getAttribute("minlength"),
-    ).toBe("8");
-    fireEvent.change(screen.getByLabelText("Mot de passe du coffre"), {
-      target: { value: "12345678" },
-    });
-    fireEvent.change(screen.getByLabelText("Confirmer le mot de passe"), {
-      target: { value: "12345678" },
-    });
+    await screen.findByLabelText("Espace maximum pour Notes");
+    expect(screen.queryByLabelText(/mot de passe/i)).toBeNull();
     fireEvent.submit(
       screen.getByRole("button", { name: "Commencer" }).closest("form")!,
     );
@@ -72,12 +59,6 @@ describe("storage choice after Google sign-in", () => {
     expect(limit.getAttribute("max")).toBe("112");
     expect(screen.getByText("112 Go disponibles sur Drive.")).toBeTruthy();
     fireEvent.change(limit, { target: { value: "113" } });
-    fireEvent.change(screen.getByLabelText("Mot de passe du coffre"), {
-      target: { value: "12345678" },
-    });
-    fireEvent.change(screen.getByLabelText("Confirmer le mot de passe"), {
-      target: { value: "12345678" },
-    });
     fireEvent.submit(
       screen.getByRole("button", { name: "Commencer" }).closest("form")!,
     );

@@ -1,0 +1,323 @@
+import "fake-indexeddb/auto";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  accessKeyFromPassword,
+  clearLocalVault,
+  createVault,
+  inspectManifest,
+  sealManifest,
+  unlockVault,
+} from "../src/core/vault";
+import type { VaultData } from "../src/core/types";
+import type { CloudConnection, CloudFile } from "../src/cloud";
+import { createData } from "../src/seed";
+import {
+  makeAccess,
+  keyBytes,
+  migrateAccess,
+  localAccess,
+  saveAccess,
+  publishAccess,
+  readCloudAccess,
+} from "../src/access";
+import {
+  findHeads,
+  history,
+  commonAncestor,
+  openCloudVault,
+  syncVault,
+  readSyncState,
+  writeSyncState,
+  SyncFailure,
+} from "../src/sync-v2";
+import { mergeVault, stampChanges } from "../src/merge";
+import { packSession, unpackBundle } from "../src/archive";
+const owner = "google-person-a";
+class Drive implements CloudConnection {
+  provider = "google" as const;
+  account = "a@example.com";
+  files = new Map<string, { name: string; bytes: Uint8Array }>();
+  afterCreate?: (name: string) => Promise<void>;
+  failList = false;
+  add(name: string, bytes: Uint8Array) {
+    const id = crypto.randomUUID();
+    this.files.set(id, { name, bytes: bytes.slice() });
+    return id;
+  }
+  async list() {
+    if (this.failList) throw new Error("offline");
+    return [...this.files].map(([id, f]) => ({
+      id,
+      name: f.name,
+      size: f.bytes.byteLength,
+    }));
+  }
+  async read(id: string) {
+    const f = this.files.get(id);
+    if (!f) throw new Error("missing");
+    return f.bytes.slice();
+  }
+  async create(name: string, bytes: Uint8Array) {
+    const id = this.add(name, bytes);
+    await this.afterCreate?.(name);
+    return { id, name, size: bytes.byteLength };
+  }
+  async quota() {
+    return {
+      total: 1e12,
+      used: [...this.files.values()].reduce(
+        (s, f) => s + f.bytes.byteLength,
+        0,
+      ),
+    };
+  }
+  async disconnect() {}
+}
+function seed() {
+  const data = createData();
+  data.owner = { provider: "google", subject: owner };
+  data.channels.push({
+    id: crypto.randomUUID(),
+    name: "Perso",
+    description: "",
+    icon: "hash",
+  });
+  return data;
+}
+function note(data: VaultData, text: string) {
+  return {
+    id: crypto.randomUUID(),
+    channelId: data.channels[0].id,
+    text,
+    createdAt: new Date().toISOString(),
+    attachments: [],
+    pinned: false,
+  };
+}
+async function setup() {
+  const initial = seed(),
+    record = makeAccess(owner, initial.id),
+    key = keyBytes(record),
+    session = await createVault(key, initial),
+    cloud = new Drive();
+  await publishAccess(cloud, record);
+  await syncVault(cloud, session, key, owner);
+  const root = findHeads(await cloud.list())[0].id;
+  return { initial: session.data, record, key, session, cloud, root };
+}
+beforeEach(async () => {
+  await clearLocalVault();
+  const values = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+    removeItem: (key: string) => {
+      values.delete(key);
+    },
+  });
+});
+describe("passwordless account access", () => {
+  it("starts empty and opens the same files with the derived legacy key, without reencrypting them", async () => {
+    expect(createData().channels).toEqual([]);
+    const source = await createVault("12345678", seed());
+    const attachment = await source.addFile(
+      new File(["photo data"], "photo.png", { type: "image/png" }),
+    );
+    const data = source.data,
+      message = note(data, "Ancienne note");
+    message.attachments.push(attachment as never);
+    data.messages.push(message);
+    await source.save(data);
+    const before = await source.readEncryptedFile(attachment.id),
+      manifest = await source.exportManifest();
+    const record = await migrateAccess(owner, "12345678", manifest);
+    source.lock();
+    const reopened = await unlockVault(keyBytes(record));
+    expect(await reopened.readEncryptedFile(attachment.id)).toEqual(before);
+    expect(await (await reopened.readFile(attachment)).text()).toBe(
+      "photo data",
+    );
+    expect((await localAccess(owner)).some((r) => r.vaultId === data.id)).toBe(
+      true,
+    );
+    await expect(
+      migrateAccess("another-person", "12345678", manifest),
+    ).rejects.toThrow("autre compte");
+    expect(keyBytes(record)).toEqual(
+      await accessKeyFromPassword("12345678", manifest),
+    );
+  });
+  it("never overwrites a valid local access key with a different remote key", async () => {
+    const record = makeAccess(owner, crypto.randomUUID());
+    await saveAccess(record);
+    await expect(saveAccess(makeAccess(owner, record.vaultId))).rejects.toThrow(
+      "autre clé",
+    );
+    expect(
+      (await localAccess(owner)).find((r) => r.vaultId === record.vaultId),
+    ).toEqual(record);
+  });
+  it("recovers from only a Google account and its Drive profile on a fresh device", async () => {
+    const { record, cloud, session, key } = await setup();
+    const data = session.data;
+    data.messages.push(note(data, "Retrouvée sur mobile"));
+    await session.save(data);
+    await syncVault(cloud, session, key, owner);
+    session.lock();
+    await clearLocalVault();
+    writeSyncState(null);
+    const remoteAccess = await readCloudAccess(cloud, owner);
+    expect(remoteAccess).toEqual(record);
+    const mobile = await openCloudVault(cloud, keyBytes(remoteAccess!), owner);
+    expect(mobile.data.messages[0].text).toBe("Retrouvée sur mobile");
+    await expect(readCloudAccess(cloud, "wrong-person")).rejects.toThrow(
+      "autre compte",
+    );
+  });
+  it("exports a portable private backup and can reopen it without a password", async () => {
+    const { record, session } = await setup();
+    const archive = await packSession(session, record),
+      bundle = await unpackBundle(new File([archive], "backup.notes"));
+    expect(bundle.access).toEqual(record);
+    expect(
+      (await inspectManifest(keyBytes(bundle.access!), bundle.manifest)).id,
+    ).toBe(record.vaultId);
+  });
+});
+describe("concurrent PC and phone updates", () => {
+  it("does not download unchanged metadata again on each poll", async () => {
+    const { cloud, session, key } = await setup();
+    const reads = vi.spyOn(cloud, "read");
+    const result = await syncVault(cloud, session, key, owner);
+    expect(result.session).toBe(session);
+    expect(reads).not.toHaveBeenCalled();
+  });
+  it("merges independent local and remote notes and reuses local attachment ciphertext", async () => {
+    const { initial, key, session, cloud, root } = await setup();
+    const remote = structuredClone(initial);
+    remote.messages.push(note(remote, "Téléphone"));
+    cloud.add(
+      `s-${crypto.randomUUID()}--${root}.flion`,
+      await sealManifest(key, remote),
+    );
+    const local = session.data;
+    const file = await session.addFile(new File(["document"], "doc.txt"));
+    local.messages.push({ ...note(local, "PC"), attachments: [file] });
+    await session.save(local);
+    const result = await syncVault(cloud, session, key, owner);
+    expect(result.session.data.messages.map((m) => m.text).sort()).toEqual([
+      "PC",
+      "Téléphone",
+    ]);
+    expect(await (await result.session.readFile(file)).text()).toBe("document");
+    expect(findHeads(await cloud.list())).toHaveLength(1);
+    expect(readSyncState()?.dirty).toBe(false);
+  });
+  it("merges a real publication race into one head without dropping either note", async () => {
+    const { initial, key, session, cloud, root } = await setup();
+    const remote = structuredClone(initial);
+    remote.messages.push(note(remote, "Mobile simultané"));
+    const remoteManifest = await sealManifest(key, remote);
+    const local = session.data;
+    local.messages.push(note(local, "PC simultané"));
+    await session.save(local);
+    let raced = false;
+    cloud.afterCreate = async (name) => {
+      if (name.startsWith("s-") && !raced) {
+        raced = true;
+        cloud.add(`s-${crypto.randomUUID()}--${root}.flion`, remoteManifest);
+      }
+    };
+    const result = await syncVault(cloud, session, key, owner);
+    expect(result.session.data.messages.map((m) => m.text).sort()).toEqual([
+      "Mobile simultané",
+      "PC simultané",
+    ]);
+    const heads = findHeads(await cloud.list());
+    expect(heads).toHaveLength(1);
+    expect(heads[0].parents).toHaveLength(2);
+    expect(
+      (await inspectManifest(key, await cloud.read(heads[0].file.id))).messages,
+    ).toHaveLength(2);
+  });
+  it("keeps a live local session if the network fails after the atomic merge", async () => {
+    const { initial, key, session, cloud, root } = await setup();
+    const remote = structuredClone(initial);
+    remote.messages.push(note(remote, "Mobile"));
+    cloud.add(
+      `s-${crypto.randomUUID()}--${root}.flion`,
+      await sealManifest(key, remote),
+    );
+    const local = session.data;
+    local.messages.push(note(local, "PC"));
+    await session.save(local);
+    cloud.afterCreate = async (name) => {
+      if (name.startsWith("s-")) cloud.failList = true;
+    };
+    let live;
+    try {
+      await syncVault(cloud, session, key, owner);
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SyncFailure);
+      live = (error as SyncFailure).session;
+    }
+    expect(live.data.messages).toHaveLength(2);
+    cloud.failList = false;
+    cloud.afterCreate = undefined;
+    expect(
+      (await syncVault(cloud, live, key, owner)).session.data.messages,
+    ).toHaveLength(2);
+  });
+  it("merges fields separately, respects deletions, and deterministically settles a shared-field edit", () => {
+    const base = seed();
+    base.messages.push(note(base, "Initial"));
+    const left = structuredClone(base),
+      right = structuredClone(base);
+    left.messages[0].text = "PC";
+    right.messages[0].pinned = true;
+    const merged = mergeVault(
+      base,
+      stampChanges(base, left, "2026-11-10T10:00:00Z"),
+      stampChanges(base, right, "2026-11-10T11:00:00Z"),
+    );
+    expect(merged.messages[0]).toMatchObject({ text: "PC", pinned: true });
+    right.messages[0].text = "Mobile";
+    const a = stampChanges(base, left, "2026-11-10T10:00:00Z"),
+      b = stampChanges(base, right, "2026-11-10T11:00:00Z");
+    expect(mergeVault(base, a, b)).toEqual(mergeVault(base, b, a));
+    expect(mergeVault(base, a, b).messages[0].text).toBe("Mobile");
+    left.channels = [];
+    left.messages = [];
+    expect(mergeVault(base, left, right).messages).toEqual([]);
+    right.messages.push(note(base, "Écrite hors ligne"));
+    expect(mergeVault(base, left, right).messages.map((m) => m.text)).toEqual([
+      "Écrite hors ligne",
+    ]);
+    expect(mergeVault(base, left, right).channels).toHaveLength(1);
+  });
+  it("validates merge history, including a shared ancestor and hidden cycles", () => {
+    const a = crypto.randomUUID(),
+      b = crypto.randomUUID(),
+      c = crypto.randomUUID(),
+      d = crypto.randomUUID();
+    const version = (id: string, parents = "root"): CloudFile => ({
+      id: crypto.randomUUID(),
+      name: `s-${id}--${parents}.flion`,
+      size: 100,
+    });
+    const files = [
+      version(a),
+      version(b, a),
+      version(c, a),
+      version(d, `${b}--${c}`),
+    ];
+    expect(findHeads(files)[0].id).toBe(d);
+    expect(commonAncestor(history(files), [b, c])).toBe(a);
+    expect(() => history([version(a), version(b, c), version(c, b)])).toThrow(
+      "invalide",
+    );
+  });
+});

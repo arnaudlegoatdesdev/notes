@@ -10,7 +10,7 @@ Les clients fournis sont configurés sur GitHub. Pour une nouvelle installation 
 
 L’origine Web autorisée est `https://notes.flion.fr`. Pour tester localement, ajoutez vous-même `http://127.0.0.1:5173` aux origines autorisées du client Web. Les deux clients doivent rester dans le même projet pour partager le même dossier Drive.
 
-La connexion à Notes demande les portées `openid email profile`. L’accès à `https://www.googleapis.com/auth/drive.appdata` est demandé uniquement lorsque l’utilisateur choisit Drive. Activez Google Drive API. Vérifiez les utilisateurs de test dans **Google Auth Platform > Audience**. Pour ouvrir l’application à tous, passez l’audience en production et suivez les éventuelles exigences de vérification indiquées par Google.
+La connexion à Notes demande les portées `openid email profile`. L’accès à `https://www.googleapis.com/auth/drive.appdata` est demandé lors du premier choix de Drive. Les autorisations déjà accordées sont réutilisées grâce à `include_granted_scopes`. La réponse `scope` permet de reprendre Drive sans second choix lorsque l’accès existe déjà. Activez Google Drive API. Vérifiez les utilisateurs de test dans **Google Auth Platform > Audience**. Pour ouvrir l’application à tous, passez l’audience en production et suivez les éventuelles exigences de vérification indiquées par Google.
 
 L’accueil est `https://notes.flion.fr/`, la confidentialité `https://notes.flion.fr/privacy.html`. Le nom de consentement est **Notes**. Aucun secret de serveur ni compte de service n’est nécessaire.
 
@@ -39,4 +39,4 @@ La même origine garde le même stockage navigateur et les mêmes origines OAuth
 
 ## Validation réelle
 
-Connectez-vous avec un vrai compte Google. Vérifiez le choix local sans demande d’accès Drive, puis Drive avec lecture du quota, création sur Windows et ouverture sur téléphone. Testez une modification dans l’autre sens, un quota atteint et une connexion interrompue. La validation automatisée du dépôt ne prouve pas que l’audience et les API du projet Google ont été activées dans la console.
+Connectez-vous avec un vrai compte Google. Vérifiez le choix local sans demande d’accès Drive, puis Drive avec lecture du quota, création sur Windows et ouverture sur téléphone. Testez une modification dans l’autre sens, deux envois simultanés, un quota atteint et une connexion interrompue. Les anciens coffres demandent leur mot de passe une seule fois, puis utilisent une clé sauvegardée sur Drive. La validation automatisée du dépôt ne prouve pas que l’audience et les API du projet Google ont été activées dans la console.

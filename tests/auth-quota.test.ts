@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { authorizeGoogle, readGoogleIdentity } from "../src/cloud/google";
+import {
+  authorizeGoogle,
+  readGoogleIdentity,
+  forgetGoogleGrant,
+  driveGrant,
+} from "../src/cloud/google";
 import { signInGoogle, assertVaultOwner } from "../src/auth";
 import {
   availableCloudBytes,
@@ -9,6 +14,7 @@ import {
 } from "../src/quota";
 import { createData } from "../src/seed";
 afterEach(() => {
+  forgetGoogleGrant();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
@@ -18,7 +24,7 @@ const json = (data: unknown, status = 200) =>
     status,
     headers: { "Content-Type": "application/json" },
   });
-function fakeIdentity() {
+function fakeIdentity(scope?: string) {
   vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "public-test-client");
   let options: { scope: string; callback: (response: unknown) => void };
   const start = vi.fn((o: typeof options) => {
@@ -28,6 +34,7 @@ function fakeIdentity() {
         options.callback({
           access_token: "identity-only-token",
           expires_in: 3600,
+          scope,
         }),
     };
   });
@@ -61,6 +68,34 @@ describe("Google identity independent from Drive", () => {
     expect(fetcher.mock.calls[0][1].headers.Authorization).toBe(
       "Bearer identity-only-token",
     );
+  });
+  it("reuses a previously granted Drive scope for the same signed-in account", async () => {
+    const start = fakeIdentity(
+      "openid email profile https://www.googleapis.com/auth/drive.appdata",
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          json({
+            sub: "google-person-123",
+            email: "person@example.com",
+            email_verified: true,
+          }),
+        ),
+    );
+    await signInGoogle();
+    expect(start.mock.calls[0][0]).toMatchObject({
+      scope: "openid email profile",
+      include_granted_scopes: true,
+    });
+    expect(driveGrant("google-person-123")?.accessToken).toBe(
+      "identity-only-token",
+    );
+    expect(driveGrant("another-person")).toBeNull();
+    forgetGoogleGrant();
+    expect(driveGrant("google-person-123")).toBeNull();
   });
   it("asks for appdata only when Drive is explicitly connected", async () => {
     const start = fakeIdentity();

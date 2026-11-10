@@ -1,17 +1,19 @@
-import { MIN_PASSPHRASE_LENGTH } from "../core/vault";
 import { useState, type FormEvent } from "react";
 import {
   ArrowLeft,
   ArrowRight,
-  Cloud,
   HardDrive,
   Check,
   LoaderCircle,
-  LockKeyhole,
 } from "lucide-react";
 import { connectCloud, type CloudConnection } from "../cloud";
 import type { GoogleUser } from "../auth";
-import { findHead } from "../sync";
+import type { AccessRecord } from "../core/types";
+import { MIN_PASSPHRASE_LENGTH } from "../core/vault";
+import { findHead } from "../sync-v2";
+import { readCloudAccess } from "../access";
+import { unpackBundle } from "../archive";
+import GoogleDriveIcon from "./GoogleDriveIcon";
 import {
   availableCloudBytes,
   availableDeviceBytes,
@@ -21,7 +23,8 @@ import {
   validateLimit,
 } from "../quota";
 export interface VaultOptions {
-  password: string;
+  password?: string;
+  access?: AccessRecord;
   limit: number;
   connection: CloudConnection | null;
   open: boolean;
@@ -40,42 +43,47 @@ export default function VaultSetup({
   onSubmit: (options: VaultOptions) => Promise<void>;
   onChangeAccount?: () => void;
 }) {
-  const [stage, setStage] = useState<"choice" | "vault">("choice");
+  const [stage, setStage] = useState<"choice" | "limit" | "legacy">("choice");
   const [storage, setStorage] = useState<"drive" | "local">("drive");
   const [connection, setConnection] = useState<CloudConnection | null>(null);
-  const [open, setOpen] = useState(restoreOnly);
   const [maximum, setMaximum] = useState<number | undefined>();
-  const [limit, setLimit] = useState("1");
-  const [password, setPassword] = useState("");
-  const [repeat, setRepeat] = useState("");
+  const [limit, setLimit] = useState("1"),
+    [password, setPassword] = useState("");
   const [backup, setBackup] = useState<File>();
-  const [working, setWorking] = useState(false);
-  const [error, setError] = useState("");
-  const waiting = working || busy;
+  const [working, setWorking] = useState(false),
+    [error, setError] = useState("");
+  const waiting = busy || working;
   async function chooseStorage() {
     setError("");
     setWorking(true);
     try {
       let max: number | undefined;
       if (storage === "drive") {
-        const conn = await connectCloud("google", user.id);
-        const remote = findHead(await conn.list());
-        const quota = await conn.quota();
-        max = availableCloudBytes(quota);
-        if (!remote && max !== undefined && max < MIN_VAULT_BYTES)
+        const conn = await connectCloud("google", user.id),
+          files = await conn.list(),
+          head = findHead(files);
+        const access = await readCloudAccess(conn, user.id, files);
+        setConnection(conn);
+        if (access) {
+          await onSubmit({ access, connection: conn, open: true, limit: GB });
+          return;
+        }
+        if (head) {
+          setStage("legacy");
+          return;
+        }
+        if (restoreOnly)
+          throw new Error("Aucune note sur ce compte Google Drive.");
+        max = availableCloudBytes(await conn.quota());
+        if (max !== undefined && max < MIN_VAULT_BYTES)
           throw new Error(
             "Google Drive est plein. Libérez au moins 1 Mo avant de continuer.",
           );
-        if (restoreOnly && !remote)
-          throw new Error("Aucun coffre Notes sur ce compte Google Drive.");
-        setConnection(conn);
-        setOpen(!!remote);
       } else {
+        setConnection(null);
         max = await availableDeviceBytes().catch(() => undefined);
         if (max !== undefined && max < MIN_VAULT_BYTES)
           throw new Error("Cet appareil n’a pas assez d’espace disponible.");
-        setConnection(null);
-        setOpen(false);
       }
       setMaximum(max);
       setLimit(
@@ -86,7 +94,7 @@ export default function VaultSetup({
           ),
         ),
       );
-      setStage("vault");
+      setStage("limit");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Connexion indisponible.");
     } finally {
@@ -96,15 +104,19 @@ export default function VaultSetup({
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
+    setWorking(true);
     try {
-      if (!open && password !== repeat)
-        throw new Error("Les mots de passe sont différents.");
-      const limitBytes = open ? GB : validateLimit(Number(limit), maximum);
-      await onSubmit({ password, limit: limitBytes, connection, open, backup });
+      await onSubmit({
+        connection,
+        limit: stage === "legacy" ? GB : validateLimit(Number(limit), maximum),
+        open: stage === "legacy",
+        password: stage === "legacy" ? password : undefined,
+        backup,
+      });
     } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "Impossible d’ouvrir le coffre.",
-      );
+      setError(e instanceof Error ? e.message : "Impossible d’ouvrir Notes.");
+    } finally {
+      setWorking(false);
     }
   }
   return (
@@ -112,7 +124,7 @@ export default function VaultSetup({
       {stage === "choice" ? (
         <>
           <h1>
-            {restoreOnly ? "Retrouver mon coffre" : "Où garder vos notes ?"}
+            {restoreOnly ? "Retrouver mes notes" : "Où garder vos notes ?"}
           </h1>
           <p className="setup-account">{user.email}</p>
           <div className="storage-choices">
@@ -122,7 +134,7 @@ export default function VaultSetup({
               onClick={() => setStorage("drive")}
               disabled={waiting}
             >
-              <Cloud size={22} />
+              <GoogleDriveIcon />
               <div>
                 <strong>
                   Google Drive <span className="recommended">Recommandé</span>
@@ -138,9 +150,9 @@ export default function VaultSetup({
                 onClick={() => setStorage("local")}
                 disabled={waiting}
               >
-                <HardDrive size={22} />
+                <HardDrive size={24} />
                 <div>
-                  <strong>Cet appareil uniquement</strong>
+                  <strong>Stockage local</strong>
                   <span>Aucune synchronisation sur le téléphone.</span>
                 </div>
                 {storage === "local" && <Check size={18} />}
@@ -170,12 +182,31 @@ export default function VaultSetup({
                 disabled={waiting}
                 onChange={(event) => {
                   const file = event.target.files?.[0];
-                  if (file) {
-                    setBackup(file);
-                    setConnection(null);
-                    setOpen(true);
-                    setStage("vault");
-                  }
+                  if (!file) return;
+                  setWorking(true);
+                  setError("");
+                  void unpackBundle(file)
+                    .then(async (bundle) => {
+                      if (bundle.access)
+                        await onSubmit({
+                          access: bundle.access,
+                          connection: null,
+                          open: true,
+                          backup: file,
+                          limit: GB,
+                        });
+                      else {
+                        setBackup(file);
+                        setConnection(null);
+                        setStage("legacy");
+                      }
+                    })
+                    .catch((e) =>
+                      setError(
+                        e instanceof Error ? e.message : "Sauvegarde invalide.",
+                      ),
+                    )
+                    .finally(() => setWorking(false));
                 }}
               />
             </label>
@@ -199,23 +230,19 @@ export default function VaultSetup({
               setStage("choice");
               setBackup(undefined);
               setPassword("");
-              setRepeat("");
               setError("");
             }}
           >
             <ArrowLeft size={14} />
             Retour
           </button>
-          <h1>{open ? "Ouvrir mon coffre" : "Créer mon coffre"}</h1>
-          <p className="setup-account">
-            {connection
-              ? "Google Drive"
-              : backup
-                ? "Sauvegarde"
-                : "Cet appareil uniquement"}
-          </p>
+          <h1>
+            {stage === "legacy"
+              ? "Mettre à jour mon espace"
+              : "Votre espace de stockage"}
+          </h1>
           <form onSubmit={(event) => void submit(event)}>
-            {!open && (
+            {stage === "limit" ? (
               <>
                 <label htmlFor="setup-limit">Espace maximum pour Notes</label>
                 <div className="limit-input">
@@ -239,40 +266,28 @@ export default function VaultSetup({
                 <p className="field-note">
                   {maximum === undefined
                     ? "Limite modifiable dans les paramètres."
-                    : `${formatBytes(maximum)} disponibles ${connection ? "sur Drive" : "sur cet appareil"}.`}
+                    : `${formatBytes(maximum)} disponibles ${connection ? "sur Drive" : "en local"}.`}
                 </p>
               </>
-            )}
-            <label htmlFor="setup-password">Mot de passe du coffre</label>
-            <input
-              id="setup-password"
-              type="password"
-              autoComplete={open ? "current-password" : "new-password"}
-              required
-              minLength={MIN_PASSPHRASE_LENGTH}
-              maxLength={512}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              disabled={waiting}
-            />
-            {!open && (
+            ) : (
               <>
-                <label htmlFor="setup-repeat">Confirmer le mot de passe</label>
+                <p className="field-note">
+                  Saisissez l’ancien mot de passe une dernière fois. Les
+                  prochaines ouvertures utiliseront votre compte Google.
+                </p>
+                <label htmlFor="setup-password">
+                  Ancien mot de passe du coffre
+                </label>
                 <input
-                  id="setup-repeat"
+                  id="setup-password"
                   type="password"
-                  autoComplete="new-password"
-                  required
+                  autoComplete="current-password"
                   minLength={MIN_PASSPHRASE_LENGTH}
-                  value={repeat}
-                  onChange={(e) => setRepeat(e.target.value)}
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                   disabled={waiting}
                 />
-                <p className="field-note">
-                  <LockKeyhole size={12} />
-                  {MIN_PASSPHRASE_LENGTH} caractères minimum. Ce mot de passe
-                  chiffre vos notes et ne peut pas être réinitialisé.
-                </p>
               </>
             )}
             <button className="button primary full" disabled={waiting}>
@@ -281,7 +296,7 @@ export default function VaultSetup({
               ) : (
                 <ArrowRight size={17} />
               )}
-              {open ? "Ouvrir Notes" : "Commencer"}
+              {stage === "legacy" ? "Ouvrir Notes" : "Commencer"}
             </button>
           </form>
         </>

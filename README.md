@@ -8,13 +8,15 @@ Un espace personnel pour les mémos, les photos et les fichiers, organisé en sa
 
 ## Utilisation
 
-Connectez-vous avec Google. Choisissez ensuite **Google Drive**, recommandé pour retrouver le coffre sur votre téléphone, ou **cet appareil uniquement**. La connexion Google ne donne pas automatiquement accès à Drive. Le mode local ne synchronise pas les fichiers entre appareils.
+Connectez-vous avec Google. Choisissez **Google Drive**, recommandé pour retrouver vos notes sur votre téléphone, ou **Stockage local**. Drive reste facultatif. Les nouveaux espaces ne contiennent aucun salon : créez ceux dont vous avez besoin.
 
-Pour un nouveau coffre Drive, la limite maximale correspond à l’espace libre annoncé par le compte Google. Une limite de112 Go est donc proposée si le quota indique112 Go libres. Les autres usages du compte continuent à consommer cet espace ; chaque transfert vérifie de nouveau la disponibilité.
+La limite maximale proposée correspond à l’espace libre annoncé par Google. Si le compte dispose de 112 Go libres, vous pouvez choisir jusqu’à 112 Go. Chaque transfert vérifie aussi le quota réel du compte.
 
-Créez le mot de passe du coffre, puis utilisez vos salons. Ce mot de passe chiffre les données et reste distinct du compte Google. Il ne peut pas être réinitialisé pour récupérer un coffre perdu.
+Aucun mot de passe Notes n’est demandé. Sur un autre appareil, le même compte Google retrouve la configuration Drive et la clé de l’espace lorsque l’autorisation a déjà été accordée. Google peut encore demander un consentement ou une reconnexion. Le mode local ne synchronise pas le téléphone.
 
-Sur un autre appareil, connectez le même compte Google, choisissez Google Drive et saisissez le mot de passe du coffre existant. L’ouverture de Notes demande une connexion Internet pour Google ; une fois le coffre ouvert, les modifications locales sont conservées même si le réseau est interrompu.
+Pour un coffre créé avant la version 0.3, l’ancien mot de passe est nécessaire une seule fois pour récupérer sa clé. Ce mot de passe n’est pas enregistré. Les pièces jointes ne sont pas rechiffrées ni renvoyées pendant cette migration.
+
+**Confidentialité :** la clé est conservée sur l’appareil et, en mode Drive, dans le dossier privé de Notes sur votre compte Google. Google peut techniquement accéder à cette clé. Cette version ne promet donc pas un chiffrement dont Google serait exclu. Les exports `.notes` contiennent également la clé et doivent rester privés.
 
 ## Fonctionnalités
 
@@ -23,7 +25,8 @@ Sur un autre appareil, connectez le même compte Google, choisissez Google Drive
 - Cinq thèmes, choix de police et taille du texte.
 - Chiffrement local AES 256 GCM et synchronisation directe avec Google Drive.
 - Stockage local seul possible, avec avertissement sur l’absence de synchronisation.
-- Mises à jour Windows signées.
+- Fusion automatique des modifications entre ordinateur et téléphone.
+- Mises à jour Windows signées et téléchargement direct proposé sur le site sous Windows.
 
 ## Hébergement et comptes
 
@@ -33,7 +36,7 @@ Le site est statique, construit avec React, TypeScript et Vite. Cloudflare Pages
 
 ## Limites et vérification
 
-Fichiers de 25 Mio maximum. Export regroupé limité à 512 Mio ; l’import cloud est progressif. Les anciennes versions chiffrées restent sur Drive, donc supprimer un message ne purge pas immédiatement toutes ses copies historiques. Les conflits entre appareils sont bloqués pour préserver les copies locales.
+Fichiers de 25 Mio maximum. Export regroupé limité à 512 Mio ; l’import cloud est progressif. Les anciennes versions chiffrées restent sur Drive, donc supprimer un message ne purge pas immédiatement toutes ses copies historiques. La synchronisation fusionne les ajouts et les modifications de champs distincts. Deux modifications du même champ sont départagées par leur date, puis de façon déterministe en cas d’égalité. Une suppression prime sur la modification du même élément. Une note nouvelle envoyée dans un salon supprimé sur l’autre appareil conserve ce salon. L’historique cloud garde les versions précédentes.
 
 Le code de chiffrement n’a pas été audité indépendamment. Les tests automatisés ne remplacent pas un essai de connexion avec un vrai compte Google. L’installeur possède une signature de mise à jour Tauri, distincte d’un certificat Windows Authenticode. [Sécurité](SECURITY.md).
 

@@ -16,6 +16,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
 type StoredState = { revision: string; manifest: Uint8Array; fileSizes: Record<string, number>; fileKeys?: Record<string, string> };
+export type VaultSecret = string | Uint8Array;
 export interface VaultSession {
   readonly data: VaultData;
   save(data: VaultData): Promise<void>;
@@ -90,7 +91,7 @@ async function readStorage(): Promise<{ state?: StoredState; files: Record<strin
     return { state, files };
   } finally { db.close(); }
 }
-function conflict(): Error { return new Error('Le coffre a changé dans un autre onglet. Verrouillez puis rouvrez-le avant de continuer.'); }
+function conflict(): Error { return new Error('Le coffre a changé dans un autre onglet. Réessayez pour récupérer les dernières modifications.'); }
 
 /** An explicit replacement is used only after all decryption and validation succeeds. */
 async function replaceStorage(expected: string | undefined, manifest: Uint8Array, files: Record<string, Uint8Array>): Promise<string> {
@@ -236,19 +237,22 @@ function attachment(value: unknown): value is Attachment {
 }
 function validateData(value: unknown): asserts value is VaultData {
   if (!isRecord(value) || value.version !== 1 || !uuid(value.id) || !timestamp(value.createdAt)) invalid();
-  if (!Array.isArray(value.channels) || (value.channels.length < 1 || value.channels.length > 10_000) || !Array.isArray(value.messages) || value.messages.length > 100_000 || !isRecord(value.preferences)) invalid();
+  if (!Array.isArray(value.channels) || (value.channels.length > 10_000) || !Array.isArray(value.messages) || value.messages.length > 100_000 || !isRecord(value.preferences)) invalid();
   if (value.owner !== undefined && (!isRecord(value.owner) || value.owner.provider !== 'google' || !text(value.owner.subject, 255, false))) invalid();
   const preferences = value.preferences;
+  if (preferences.changedAt !== undefined && !timestamp(preferences.changedAt)) invalid();
   if (!['slate', 'light', 'forest', 'sand', 'plum'].includes(String(preferences.theme)) || !['system', 'inter', 'serif', 'mono'].includes(String(preferences.font)) || !number(preferences.fontSize, 32) || Number(preferences.fontSize) < 12 || !number(preferences.limitBytes) || !preferences.limitBytes) invalid();
   const channelIds = new Set<string>();
   for (const channel of value.channels) {
     if (!isRecord(channel) || !uuid(channel.id) || channelIds.has(channel.id) || !text(channel.name, 100, false) || !text(channel.description, 1000) || !['hash', 'bookmark', 'image', 'file', 'plane', 'code', 'heart'].includes(String(channel.icon))) invalid();
+    if (channel.changedAt !== undefined && !timestamp(channel.changedAt)) invalid();
     channelIds.add(channel.id);
   }
   const messageIds = new Set<string>();
   const attachments = new Map<string, string>();
   for (const message of value.messages) {
     if (!isRecord(message) || !uuid(message.id) || messageIds.has(message.id) || !channelIds.has(String(message.channelId)) || !text(message.text, 1_000_000) || !timestamp(message.createdAt) || (message.updatedAt !== undefined && !timestamp(message.updatedAt)) || !Array.isArray(message.attachments) || message.attachments.length > 100 || typeof message.pinned !== 'boolean') invalid();
+    if (message.changedAt !== undefined && !timestamp(message.changedAt)) invalid();
     messageIds.add(message.id);
     for (const item of message.attachments) {
       if (!attachment(item)) invalid();
@@ -274,8 +278,12 @@ function quota(data: VaultData, manifest: Uint8Array, files: Record<string, Uint
 function validatePassphrase(passphrase: string) {
   if (typeof passphrase !== 'string' || passphrase.length < MIN_PASSPHRASE_LENGTH || passphrase.length > 1024) throw new Error(`Utilisez un mot de passe de ${MIN_PASSPHRASE_LENGTH} à 1 024 caractères.`);
 }
-async function derive(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
+async function derive(passphrase: VaultSecret, salt: Uint8Array): Promise<CryptoKey> {
   // Parameters are fixed by the format, never accepted from an imported envelope.
+  if (passphrase instanceof Uint8Array) {
+    if (passphrase.byteLength !== 32) throw new Error('Clé Notes invalide.');
+    return crypto.subtle.importKey('raw', copy(passphrase), 'AES-GCM', false, ['encrypt', 'decrypt']);
+  }
   validatePassphrase(passphrase);
   const material = await crypto.subtle.importKey('raw', encoder.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt: copy(salt), iterations: ITERATIONS }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
@@ -292,7 +300,7 @@ function parseManifest(manifest: Uint8Array): { salt: Uint8Array; iv: Uint8Array
   if (!(manifest instanceof Uint8Array) || manifest.byteLength < 52 || manifest.byteLength > MAX_MANIFEST_BYTES || !startsWith(manifest, VAULT_MAGIC)) invalid();
   return { salt: copy(manifest.subarray(8, 24)), iv: copy(manifest.subarray(24, 36)), ciphertext: copy(manifest.subarray(36)) };
 }
-async function decryptManifest(manifest: Uint8Array, passphrase: string): Promise<{ key: CryptoKey; salt: Uint8Array; data: VaultData }> {
+async function decryptManifest(manifest: Uint8Array, passphrase: VaultSecret): Promise<{ key: CryptoKey; salt: Uint8Array; data: VaultData }> {
   const { salt, iv, ciphertext } = parseManifest(manifest);
   const key = await derive(passphrase, salt);
   let bytes: ArrayBuffer;
@@ -310,11 +318,24 @@ async function decryptFile(bytes: Uint8Array, id: string, key: CryptoKey): Promi
   } catch { throw new Error('Pièce jointe endommagée.'); }
 }
 
-export async function inspectManifest(passphrase: string, manifest: Uint8Array): Promise<VaultData> {
+export async function inspectManifest(passphrase: VaultSecret, manifest: Uint8Array): Promise<VaultData> {
   return structuredClone((await decryptManifest(manifest, passphrase)).data);
 }
+/** Export only the derived key during the one-time legacy migration. */
+export async function accessKeyFromPassword(passphrase: string, manifest: Uint8Array): Promise<Uint8Array> {
+  await decryptManifest(manifest, passphrase); // Authenticate before exporting any key.
+  const { salt } = parseManifest(manifest);
+  const material = await crypto.subtle.importKey('raw', encoder.encode(passphrase), 'PBKDF2', false, ['deriveBits']);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: copy(salt), iterations: ITERATIONS }, material, 256));
+}
+export async function localManifest(): Promise<Uint8Array | null> { const state = await readState(); return state ? copy(state.manifest) : null; }
+export async function sealManifest(secret: VaultSecret, data: VaultData, template?: Uint8Array): Promise<Uint8Array> {
+  validateData(data);
+  const salt = template ? parseManifest(template).salt : crypto.getRandomValues(new Uint8Array(SALT_BYTES));
+  return encryptManifest(data, await derive(secret, salt), salt);
+}
 export async function hasVault(): Promise<boolean> { return !!(await readState()); }
-export async function createVault(passphrase: string, initialData: VaultData): Promise<VaultSession> {
+export async function createVault(passphrase: VaultSecret, initialData: VaultData): Promise<VaultSession> {
   const data = structuredClone(initialData);
   validateData(data);
   const current = await readState();
@@ -327,10 +348,10 @@ export async function createVault(passphrase: string, initialData: VaultData): P
   const revision = await replaceStorage(undefined, manifest, {});
   return session(data, key, salt, revision);
 }
-export async function unlockVault(passphrase: string): Promise<VaultSession> {
+export async function unlockVault(passphrase: VaultSecret): Promise<VaultSession> {
   const state = await readState();
   if (!state) throw new Error('Aucun coffre sur cet appareil.');
-  const result = await decryptManifest(state.manifest, passphrase);
+  const result = await decryptManifest(copy(state.manifest), passphrase);
   ensureReferenceSizes(result.data, state.fileSizes);
   // Draft attachment bytes are persisted before their message. A refreshed or
   // locked composer cannot recover them, so reclaim only unreferenced objects.
@@ -351,10 +372,10 @@ export async function unlockVault(passphrase: string): Promise<VaultSession> {
  * live until a final atomic manifest switch. Aggregate size is limited by the
  * user's vault limit and device storage, not by an in-memory bundle ceiling.
  */
-export async function importVaultStream(passphrase: string, inputManifest: Uint8Array, load: (attachment: Attachment) => Promise<Uint8Array>, expectedRevision?: string | null): Promise<VaultSession> {
+export async function importVaultStream(passphrase: VaultSecret, inputManifest: Uint8Array, load: (attachment: Attachment) => Promise<Uint8Array>, expectedRevision?: string | null): Promise<VaultSession> {
   return stageVault(passphrase, inputManifest, load, expectedRevision, true);
 }
-async function stageVault(passphrase: string, inputManifest: Uint8Array, load: (attachment: Attachment) => Promise<Uint8Array>, expectedRevision: string | null | undefined, reuseExisting: boolean, validateBundle?: (data: VaultData) => void): Promise<VaultSession> {
+async function stageVault(passphrase: VaultSecret, inputManifest: Uint8Array, load: (attachment: Attachment) => Promise<Uint8Array>, expectedRevision: string | null | undefined, reuseExisting: boolean, validateBundle?: (data: VaultData) => void): Promise<VaultSession> {
   parseManifest(inputManifest);
   const manifest = copy(inputManifest);
   const current = await readState();
@@ -400,7 +421,7 @@ async function stageVault(passphrase: string, inputManifest: Uint8Array, load: (
     throw storageFailure(error);
   }
 }
-export async function importVault(passphrase: string, bundle: EncryptedBundle, expectedRevision?: string | null): Promise<VaultSession> {
+export async function importVault(passphrase: VaultSecret, bundle: EncryptedBundle, expectedRevision?: string | null): Promise<VaultSession> {
   // Bundle imports keep the original snapshot contract. Cloud imports use the
   // streaming API directly and never allocate all attachments at once.
   if (!bundle || !(bundle.manifest instanceof Uint8Array) || !isRecord(bundle.files) || Object.keys(bundle.files).length > MAX_FILE_COUNT) invalid();

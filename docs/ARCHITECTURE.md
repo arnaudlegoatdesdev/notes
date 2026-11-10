@@ -1,43 +1,43 @@
-# Architecture du coffre
+# Architecture
 
-## Une interface, deux modes de distribution
+## Application
 
-React et TypeScript fournissent les salons, le fil de messages et les réglages. Le navigateur mobile charge ces fichiers statiques. Tauri les embarque dans une application Windows et ajoute un petit noyau Rust pour OAuth et les mises à jour. Aucune base de comptes Notes n’est nécessaire : la connexion Google vérifie l’identité. Drive est une autorisation distincte et facultative.
+React, TypeScript et Vite fournissent le site mobile. Tauri embarque la même interface dans Windows avec un noyau Rust pour OAuth et les mises à jour. Le site est statique. Aucun serveur de données ni base de comptes Notes n’est nécessaire.
 
-L’hébergement web reste nécessaire, même sans serveur de données. Il doit servir un code fiable sous HTTPS. Le code de l’application reçoit les clés de déchiffrement pendant l’utilisation du coffre : une version compromise pourrait donc accéder au contenu ouvert.
+Google vérifie l’identité via UserInfo après OAuth. La connexion demande `openid email profile`, réutilise les autorisations précédemment accordées et reste distincte du premier consentement Drive. Le choix local ne déclenche pas une autorisation Drive. Les jetons d’accès restent en mémoire. Ils peuvent expirer et nécessiter une reconnexion.
 
-## Chiffrement
+## Clés et migration
 
-Le contenu du coffre utilise AES-256-GCM, avec un vecteur d’initialisation aléatoire pour chaque chiffrement. La clé dérive du mot de passe par PBKDF2-SHA256 avec un sel propre au coffre et 600 000 itérations. Le sel et les informations nécessaires au format restent lisibles. Les messages, les salons, les réglages et les noms des pièces jointes sont contenus dans les données chiffrées.
+Chaque nouvel espace reçoit une clé aléatoire de 256 bits. AES-256-GCM chiffre les métadonnées et chaque pièce jointe avec un IV aléatoire et des données authentifiées propres au format. La clé est conservée dans une base IndexedDB séparée, associée au sujet Google et à l’identifiant du coffre. La connexion Google détermine quelle clé ouvrir ; elle ne produit pas elle-même cette clé.
 
-Le coffre local est enregistré dans IndexedDB sous forme chiffrée. La clé reste en mémoire pendant la session. L’interface prévoit un verrouillage après quinze minutes d’inactivité. Verrouiller le coffre retire la clé de la session applicative, sans pouvoir garantir l’effacement de toutes les copies mémoire internes au moteur JavaScript. Une perte du mot de passe n’a pas de procédure de récupération.
+Avec Drive, un fichier `notes-access-<identifiant>.json` contient cette clé dans le dossier privé d’application. Cela permet à un nouvel appareil autorisé de retrouver l’espace sans mot de passe ni serveur Notes. Ce dossier est accessible au fournisseur Google : il ne s’agit pas d’une promesse de chiffrement excluant Google. Une version modifiée de l’application ou un appareil compromis peut également lire les clés.
 
-Les pièces jointes ont leurs propres objets chiffrés et des identifiants opaques. Un coffre n’est donc pas un unique gros fichier cloud : modifier une ligne de texte ne doit pas obliger à renvoyer toutes les photos. La limite de 25 Mio par pièce jointe borne la mémoire nécessaire dans cette version, car Web Crypto traite chaque fichier en une fois. Pour des vidéos volumineuses, une future version devra définir et auditer un format de chiffrement par blocs.
+Les anciens coffres utilisent PBKDF2-SHA256 avec 600 000 itérations. La migration demande leur ancien mot de passe une fois, vérifie le déchiffrement et conserve uniquement la clé dérivée. Les enveloppes et les pièces jointes restent inchangées pour éviter une réécriture de toutes les données. Le mot de passe n’est enregistré ni localement ni sur Drive. Les identifiants historiques de stockage et de l’application Windows sont conservés pour retrouver les données existantes.
+
+Il n’y a plus de verrouillage automatique ou de mot de passe Notes. La déconnexion abandonne les références de session aux données et aux clés. Le stockage persistant reste récupérable après la prochaine connexion Google.
 
 ## Synchronisation
 
-Les écritures cloud utilisent des objets immuables et des versions de métadonnées. Elles n’écrasent pas aveuglément le même gros fichier. Les versions permettent de repérer une divergence entre appareils. Une divergence doit rester visible et ne doit pas supprimer silencieusement les modifications d’un appareil.
+Les pièces jointes sont des objets chiffrés immuables nommés avec un UUID. Les métadonnées sont des instantanés immuables avec un à trois parents dans leur nom. L’application comprend les anciennes chaînes à parent unique. Un manifeste reste limité à 16 Mio et un fichier à 25 Mio, ce qui borne la mémoire nécessaire à Web Crypto.
 
-Les sauvegardes locales restent la référence tant qu’un transfert n’est pas confirmé. La saturation du cloud et la limite personnelle sont deux erreurs différentes. L’espace disponible fourni par le cloud peut changer entre son affichage et l’écriture ; l’échec réel du transfert reste donc traité.
+La synchronisation compare la dernière base locale, l’état local et les têtes distantes. Elle fusionne les ajouts par UUID et les champs indépendants. Si le même champ est modifié des deux côtés, la date de modification puis une comparaison déterministe choisissent la valeur courante. Une suppression prime sur la modification du même élément ; un message nouvellement envoyé dans un salon supprimé simultanément restaure le salon pour conserver ce message. Les anciennes valeurs restent dans les instantanés historiques.
 
-L’historique de synchronisation peut consommer de l’espace même après la suppression d’un message. Cette première version n’annonce pas d’effacement cryptographique ni de nettoyage automatique des anciennes versions. Le fournisseur cloud et ses fonctions de conservation peuvent également conserver des copies. Un mécanisme de compactage devra préserver les appareils hors ligne avant toute suppression définitive d’objets.
+Deux publications simultanées forment deux branches. Une publication de fusion référence leurs deux têtes. Les changements survenus pendant un transfert sont relus avant publication, et les véritables courses de publication sont fusionnées à la passe suivante. Les écritures locales attendent la fin d’une synchronisation puis réappliquent leur changement à la session courante.
 
-## Accès cloud
+Une vérification a lieu toutes les cinq secondes quand la page est visible, au retour sur la page, au retour du réseau et après un enregistrement. Un brouillon ou une pièce jointe encore dans le composeur, une édition de message ou une fenêtre ouverte suspend temporairement la synchronisation. Il ne s’agit pas d’une connexion temps réel au serveur.
 
-La version courante utilise le dossier d’application Google Drive. L’option OneDrive est retirée de l’interface. Les jetons d’accès sont éphémères et séparés des données du coffre. Sur Windows, le noyau Rust ouvre une URL d’autorisation prédéfinie, vérifie un état aléatoire, utilise PKCE S256 et écoute uniquement sur l’interface locale pendant au maximum trois minutes. Le serveur local temporaire reçoit le retour OAuth ; ce n’est pas un serveur hébergé par l’auteur.
+Les pièces jointes importées sont authentifiées et écrites une par une dans un espace temporaire IndexedDB. Le manifeste ne remplace la copie courante qu’après validation complète et vérification de sa révision. Une interruption conserve la copie précédente ; si la fusion a déjà été activée avant une erreur réseau, la nouvelle session reste accessible. Les fichiers déjà présents et inchangés sont réutilisés.
 
-Cette architecture réduit les données détenues par l’auteur. Elle ne rend pas invisibles les tailles, les dates de transfert et le compte utilisé, et ne constitue pas une garantie de confidentialité absolue.
+La limite Notes inclut l’historique et la configuration cloud. Chaque envoi vérifie séparément cette limite et le quota réel Google. L’historique n’est pas purgé automatiquement, y compris après suppression d’un message. L’espace navigateur et le disque constituent aussi des limites indépendantes.
 
-## Imports et sauvegardes
+## Sauvegardes
 
-L’import cloud authentifie les objets et les écrit un par un dans un espace temporaire IndexedDB. Le manifeste ne remplace la copie courante qu’après validation de toutes les pièces jointes et vérification de la révision locale. Un transfert interrompu conserve le coffre précédent. Les fichiers locaux inchangés sont réutilisés. La capacité réelle de stockage du navigateur ou de l’appareil reste une limite et les erreurs disque sont traitées.
+L’export `.notes` portable contient les objets chiffrés et la clé de l’espace. Le fichier permet donc de récupérer les données et doit rester privé. Les anciens exports protégés par mot de passe restent importables avec une migration unique. L’index complet est vérifié avant l’allocation des contenus. L’export regroupé est limité à 512 Mio ; la synchronisation Drive reste progressive.
 
-L’export regroupé en fichier `.notes` est limité à 512 Mio dans cette version. Cette limite ne concerne pas la synchronisation cloud. Les fichiers d’une sauvegarde sont vérifiés avant l’import ; les téléchargements cloud utilisent un chargeur progressif.
+## Windows
 
-## Connexion Google et stockage local
+OAuth utilise le navigateur système, PKCE S256, un état aléatoire et un retour limité à l’interface locale pendant trois minutes. Les clients web et Windows doivent appartenir au même projet Google pour partager le dossier d’application.
 
-La connexion initiale demande uniquement `openid email profile`, puis vérifie le jeton auprès de Google via UserInfo. Elle ne demande pas l’accès Drive. Le choix Drive autorise ensuite séparément le dossier d’application et vérifie qu’il s’agit du même sujet Google. Les jetons et le profil de session restent en mémoire.
+Sur le site, l’offre d’installation exige un navigateur Windows de bureau et exclut Tauri ainsi que les appareils mobiles. L’API GitHub fournit la dernière version publiée. Seul l’installeur du dépôt Notes correspondant exactement au tag est accepté ; le bouton télécharge directement cet asset. Les versions plus anciennes que le site ne sont pas proposées. Le refus est mémorisé jusqu’à une nouvelle version.
 
-Les nouveaux coffres contiennent l’identifiant opaque du propriétaire dans leurs métadonnées chiffrées. Les anciens coffres restent ouvrables avec leur mot de passe et sont associés au compte lors de leur prochaine modification explicite. La connexion Google ne remplace pas le mot de passe de chiffrement.
-
-La limite proposée utilise `storageQuota.limit - storageQuota.usage`, en octets. Un compte sans plafond annoncé reste distinct d’un compte plein. En local, l’espace estimé du navigateur est utilisé lorsqu’il est disponible. Le mode local n’envoie aucun contenu à Drive et ne synchronise pas le téléphone.
+Les mises à jour intégrées utilisent le manifeste GitHub et une signature Tauri. Cette signature est distincte d’un certificat Windows Authenticode. Les formats, OAuth et la synchronisation n’ont pas reçu d’audit indépendant.

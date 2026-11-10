@@ -1,6 +1,8 @@
 import { isDesktop, nativeAuthorize } from "../desktop";
 import {
   authorizeGoogle,
+  driveGrant,
+  rememberGoogleGrant,
   GoogleConnection,
   prepareGoogleIdentity,
   readGoogleIdentity,
@@ -39,9 +41,9 @@ export async function connectCloud(
       "La connexion Google n’est pas configurée.",
       "configuration",
     );
-  const credentials = isDesktop
-    ? await nativeAuthorize("google", "drive")
-    : await authorizeGoogle(clientId());
+  const credentials = (expectedSubject ? driveGrant(expectedSubject) : null) || (isDesktop
+    ? await nativeAuthorize("google", "drive", expectedSubject)
+    : await authorizeGoogle(clientId(), "drive", expectedSubject));
   if (expectedSubject) {
     const identity = await readGoogleIdentity(credentials.accessToken);
     if (identity.id !== expectedSubject)
@@ -50,6 +52,7 @@ export async function connectCloud(
         "auth",
       );
   }
+  if (expectedSubject) rememberGoogleGrant(credentials, expectedSubject);
   const connection = new GoogleConnection(
     credentials.accessToken,
     credentials.expiresIn,

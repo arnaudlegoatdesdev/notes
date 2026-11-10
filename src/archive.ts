@@ -1,17 +1,20 @@
-import type { EncryptedBundle } from './core/types';
+import { validateAccess } from './access';
+import type { AccessRecord, EncryptedBundle } from './core/types';
 import type { VaultSession } from './core/vault';
 
 const magic = new TextEncoder().encode('FLIONA01');
+const portableMagic = new TextEncoder().encode('NOTESA02');
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const MAX = 512 * 1024 * 1024;
 const MAX_MANIFEST = 16 * 1024 * 1024;
 const MAX_FILE = 25 * 1024 * 1024 + 36;
-const MAX_ENTRIES = 10_001; // Up to 10,000 attachments plus the manifest.
+const MAX_ENTRIES = 10_002; // Up to 10,000 attachments, manifest and optional access record.
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 
 function invalid(): never { throw new Error('Sauvegarde Notes invalide ou incomplète.'); }
 function entrySize(name: string, size: number): number {
+  if (name === 'access') { if (!Number.isSafeInteger(size) || size < 1 || size > 2048) invalid(); return 14 + size; }
   if (name !== 'manifest' && !uuid.test(name)) invalid();
   if (!Number.isSafeInteger(size) || size < (name === 'manifest' ? 52 : 36) || size > (name === 'manifest' ? MAX_MANIFEST : MAX_FILE)) invalid();
   return 8 + encoder.encode(name).byteLength + size;
@@ -24,11 +27,11 @@ function header(name: string, size: number): Blob {
   view.setUint32(4, size, true);
   return new Blob([bytes, encoded]);
 }
-function start(count: number): BlobPart[] {
+function start(count: number, portable = false): BlobPart[] {
   if (!count || count > MAX_ENTRIES) invalid();
   const bytes = new ArrayBuffer(4);
   new DataView(bytes).setUint32(0, count, true);
-  return [magic, bytes];
+  return [portable ? portableMagic : magic, bytes];
 }
 function asPart(bytes: Uint8Array): BlobPart {
   return bytes.buffer instanceof ArrayBuffer ? bytes as Uint8Array<ArrayBuffer> : new Uint8Array(bytes);
@@ -42,7 +45,8 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 
 export function packBundle(bundle: EncryptedBundle): Blob {
   const entries = [['manifest', bundle.manifest], ...Object.entries(bundle.files)] as [string, Uint8Array][];
-  const parts = start(entries.length);
+  if (bundle.access) entries.push(['access', encoder.encode(JSON.stringify(validateAccess(bundle.access)))]);
+  const parts = start(entries.length, !!bundle.access);
   const total = entries.reduce((sum, [name, bytes]) => sum + entrySize(name, bytes.byteLength), 12);
   checkArchiveSize(total);
   for (const [name, bytes] of entries) parts.push(header(name, bytes.byteLength), asPart(bytes));
@@ -50,15 +54,17 @@ export function packBundle(bundle: EncryptedBundle): Blob {
 }
 
 /** Reads one encrypted attachment at a time instead of materializing exportBundle(). */
-export async function packSession(session: VaultSession): Promise<Blob> {
+export async function packSession(session: VaultSession, access?: AccessRecord): Promise<Blob> {
   const manifest = await session.exportManifest();
   const data = session.data;
   const refs = new Map(data.messages.flatMap(message => message.attachments.map(item => [item.id, item] as const)));
-  const parts = start(refs.size + 1);
-  let total = 12 + entrySize('manifest', manifest.byteLength);
+  const key = access ? encoder.encode(JSON.stringify(validateAccess(access))) : null;
+  const parts = start(refs.size + 1 + (key ? 1 : 0), !!key);
+  let total = 12 + entrySize('manifest', manifest.byteLength) + (key ? entrySize('access', key.byteLength) : 0);
   for (const [id, item] of refs) total += entrySize(id, item.storedSize);
   checkArchiveSize(total); // Reject the whole archive before reading attachment bytes.
   parts.push(header('manifest', manifest.byteLength), new Blob([asPart(manifest)]));
+  if (key) parts.push(header('access', key.byteLength), asPart(key));
   for (const [id, item] of refs) {
     const bytes = await session.readEncryptedFile(id);
     if (bytes.byteLength !== item.storedSize) invalid();
@@ -73,7 +79,8 @@ export async function unpackBundle(file: File): Promise<EncryptedBundle> {
   if (file.size > MAX) throw new Error('Sauvegarde trop volumineuse (512 Mo maximum).');
   if (file.size < 12) invalid();
   const prefix = new Uint8Array(await file.slice(0, 12).arrayBuffer());
-  if (!magic.every((value, index) => value === prefix[index])) throw new Error('Ce fichier n’est pas une sauvegarde Notes.');
+  const portable = portableMagic.every((value, index) => value === prefix[index]);
+  if (!portable && !magic.every((value, index) => value === prefix[index])) throw new Error('Ce fichier n’est pas une sauvegarde Notes.');
   const count = new DataView(prefix.buffer).getUint32(8, true);
   if (!count || count > MAX_ENTRIES) invalid();
   let offset = 12;
@@ -95,14 +102,16 @@ export async function unpackBundle(file: File): Promise<EncryptedBundle> {
     entries.push({ name, size, offset });
     offset += size;
   }
-  if (offset !== file.size || !names.has('manifest')) invalid();
+  if (offset !== file.size || !names.has('manifest') || portable !== names.has('access')) invalid();
   const files: Record<string, Uint8Array> = Object.create(null);
   let manifest: Uint8Array | undefined;
+  let access: AccessRecord | undefined;
   for (const entry of entries) {
     const bytes = new Uint8Array(await file.slice(entry.offset, entry.offset + entry.size).arrayBuffer());
     if (bytes.byteLength !== entry.size) invalid();
     if (entry.name === 'manifest') manifest = bytes;
+    else if (entry.name === 'access') { try { access = validateAccess(JSON.parse(decoder.decode(bytes))); } catch { invalid(); } }
     else files[entry.name] = bytes;
   }
-  return { manifest: manifest!, files };
+  return { manifest: manifest!, files, ...(access ? { access } : {}) };
 }
