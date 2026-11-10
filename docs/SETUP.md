@@ -16,6 +16,12 @@ L’accueil est `https://notes.flion.fr/`, la confidentialité `https://notes.fl
 
 [Configuration Google](https://developers.google.com/identity/oauth2/web/guides/get-google-api-clientid) · [OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect) · [Appdata Drive](https://developers.google.com/workspace/drive/api/guides/appdata)
 
+## Branding Google
+
+La page d’accueil de l’écran OAuth doit être `https://notes.flion.fr/about.html`. Cette présentation statique est publique, décrit Notes et l’usage des données Google, et pointe vers `https://notes.flion.fr/privacy.html`. La page d’utilisation est `https://notes.flion.fr/terms.html`. L’application reste accessible directement à la racine sans modifier les origines OAuth ni la session mémorisée.
+
+Le logo du branding doit être celui de Notes, avec la lettre N. Le fichier PNG du dépôt se trouve dans `src-tauri/icons/icon.png`.
+
 ## Cloudflare Pages
 
 Dépôt : `https://github.com/arnaudlegoatdesdev/notes`.

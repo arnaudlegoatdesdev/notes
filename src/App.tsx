@@ -963,6 +963,7 @@ export default function App() {
             Continuer avec Google
           </button>
 
+          {!isDesktop && <nav aria-label="Informations sur Notes" style={{display:"flex",justifyContent:"center",gap:18,marginTop:20,fontSize:12}}><a href="./about.html">Présentation</a><a href="./privacy.html">Confidentialité</a></nav>}
           {!cloudConfigured("google") && (
             <p className="access-error">Connexion Google non configurée.</p>
           )}
