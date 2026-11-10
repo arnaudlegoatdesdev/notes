@@ -1,6 +1,11 @@
 const uuid = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
 const uuidPattern = new RegExp(`^${uuid}$`);
-const storageKey = "notes.sync.v2";
+let storageKey = "notes.sync.v2";
+export function selectSyncAccount(subject: string): void {
+  storageKey = subject
+    ? `notes.sync.v2:${encodeURIComponent(subject)}`
+    : "notes.sync.v2";
+}
 export interface SyncState {
   provider: string;
   head: string | null;

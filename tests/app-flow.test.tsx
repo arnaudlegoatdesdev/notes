@@ -13,6 +13,9 @@ import {
 import App from "../src/App";
 import { clearLocalVault, createVault, unlockVault } from "../src/core/vault";
 import { createData } from "../src/seed";
+import { selectVaultAccount } from "../src/core/vault";
+import { selectSyncAccount } from "../src/sync-state";
+import { signInGoogle } from "../src/auth";
 import { connectCloud } from "../src/cloud";
 import { driveGrant } from "../src/cloud/google";
 import {
@@ -53,6 +56,8 @@ vi.mock("../src/desktop", () => ({
 beforeEach(async () => {
   vi.stubGlobal("crypto", webcrypto);
   vi.stubGlobal("Uint8Array", runInThisContext("Uint8Array"));
+  selectVaultAccount(user.id);
+  selectSyncAccount(user.id);
   await clearLocalVault();
   const values = new Map<string, string>();
   vi.stubGlobal("localStorage", {
@@ -67,6 +72,7 @@ beforeEach(async () => {
   Element.prototype.scrollIntoView = vi.fn();
   vi.mocked(driveGrant).mockReturnValue(null);
   vi.mocked(connectCloud).mockReset();
+  vi.mocked(signInGoogle).mockResolvedValue(user);
 });
 afterEach(() => {
   cleanup();
@@ -170,6 +176,48 @@ describe("Notes account and empty workspace flow", () => {
     await waitFor(() =>
       expect(localStorage.getItem(`notes.storage.${user.id}`)).toBe("drive"),
     );
+  });
+  it("opens a different Google account in a separate local workspace", async () => {
+    const first = createData();
+    first.owner = { provider: "google", subject: user.id };
+    first.channels.push({
+      id: crypto.randomUUID(),
+      name: "Compte A",
+      description: "",
+      icon: "hash",
+    });
+    const a = makeAccess(user.id, first.id);
+    await saveAccess(a);
+    await createVault(keyBytes(a), first);
+    rememberStorage(user.id, "local");
+    const secondUser = {
+      ...user,
+      id: "different-google-person",
+      email: "b@example.com",
+    };
+    selectVaultAccount(secondUser.id);
+    await clearLocalVault();
+    selectVaultAccount(user.id);
+    vi.mocked(signInGoogle).mockResolvedValue(secondUser);
+    render(<App />);
+    await login();
+    await screen.findByRole("heading", { name: "Où garder vos notes ?" });
+    expect(screen.queryByText("Compte A")).toBeNull();
+    expect(screen.queryByLabelText(/mot de passe/i)).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Stockage local Aucune synchronisation/,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Continuer en local" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Commencer" }));
+    await screen.findByRole("heading", { name: "Créez votre premier salon" });
+    cleanup();
+    vi.mocked(signInGoogle).mockResolvedValue(user);
+    render(<App />);
+    await login();
+    await screen.findByRole("heading", { name: "Compte A", level: 1 });
+    expect(screen.queryByLabelText(/mot de passe/i)).toBeNull();
   });
   it("ignores obsolete test storage and never asks for an old password", async () => {
     await new Promise<void>((resolve, reject) => {

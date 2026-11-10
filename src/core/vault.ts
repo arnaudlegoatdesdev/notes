@@ -1,6 +1,8 @@
 import type { Attachment, EncryptedBundle, VaultData } from './types';
 
 const DB_NAME = 'notes-vault-v2';
+let accountScope = '';
+export function selectVaultAccount(subject: string): void { accountScope = subject ? `:${encodeURIComponent(subject)}` : ''; }
 const DB_VERSION = 1;
 const VAULT_MAGIC = new TextEncoder().encode('FLIONV01');
 const FILE_MAGIC = new TextEncoder().encode('FLIONF01');
@@ -57,7 +59,7 @@ function completion(transaction: IDBTransaction): Promise<void> {
 }
 async function database(): Promise<IDBDatabase> {
   if (typeof indexedDB === 'undefined') throw new Error('Le stockage local sécurisé est indisponible dans ce navigateur.');
-  const req = indexedDB.open(DB_NAME, DB_VERSION);
+  const req = indexedDB.open(DB_NAME + accountScope, DB_VERSION);
   req.onupgradeneeded = () => { req.result.createObjectStore('state'); req.result.createObjectStore('files'); };
   return request(req);
 }

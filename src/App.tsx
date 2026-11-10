@@ -72,6 +72,7 @@ import {
   type VaultSession,
   inspectManifest,
   localManifest,
+  selectVaultAccount,
 } from "./core/vault";
 import {
   CloudError,
@@ -88,6 +89,7 @@ import {
   writeSyncState,
   SyncFailure,
 } from "./sync-v2";
+import { selectSyncAccount } from "./sync-state";
 import { packSession, unpackBundle } from "./archive";
 import { createData } from "./seed";
 import { isDesktop, checkForUpdate } from "./desktop";
@@ -713,6 +715,8 @@ export default function App() {
     setMode("login");
   };
   const resumeAccount = async (user: GoogleUser) => {
+    selectVaultAccount(user.id);
+    selectSyncAccount(user.id);
     const manifest = await localManifest();
     let local: VaultSession | null = null;
     if (manifest) {

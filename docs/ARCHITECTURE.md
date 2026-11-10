@@ -8,7 +8,7 @@ Google vérifie l’identité via UserInfo après OAuth. La connexion demande `o
 
 ## Clés
 
-Chaque nouvel espace reçoit une clé aléatoire de 256 bits. AES-256-GCM chiffre les métadonnées et chaque pièce jointe avec un IV aléatoire et des données authentifiées propres au format. La clé est conservée dans une base IndexedDB séparée, associée au sujet Google et à l’identifiant du coffre. La connexion Google détermine quelle clé ouvrir ; elle ne produit pas elle-même cette clé.
+Chaque nouvel espace reçoit une clé aléatoire de 256 bits. AES-256-GCM chiffre les métadonnées et chaque pièce jointe avec un IV aléatoire et des données authentifiées propres au format. La clé est conservée dans une base IndexedDB séparée, associée au sujet Google et à l’identifiant du coffre. Les données locales et la liaison de synchronisation sont isolées par compte Google. La connexion Google détermine quelle clé ouvrir ; elle ne produit pas elle-même cette clé.
 
 Avec Drive, un fichier `notes-access-<identifiant>.json` contient cette clé dans le dossier privé d’application. Cela permet à un nouvel appareil autorisé de retrouver l’espace sans mot de passe ni serveur Notes. Ce dossier est accessible au fournisseur Google : il ne s’agit pas d’une promesse de chiffrement excluant Google. Une version modifiée de l’application ou un appareil compromis peut également lire les clés.
 
