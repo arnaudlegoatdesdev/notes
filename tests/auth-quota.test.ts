@@ -10,6 +10,7 @@ import {
 import { createData } from "../src/seed";
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 const json = (data: unknown, status = 200) =>
@@ -18,6 +19,7 @@ const json = (data: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 function fakeIdentity() {
+  vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "public-test-client");
   let options: { scope: string; callback: (response: unknown) => void };
   const start = vi.fn((o: typeof options) => {
     options = o;
