@@ -1,0 +1,83 @@
+name: macOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+      VITE_GOOGLE_DESKTOP_CLIENT_ID: ${{ vars.VITE_GOOGLE_DESKTOP_CLIENT_ID }}
+      VITE_GOOGLE_DESKTOP_CLIENT_SECRET: ${{ vars.VITE_GOOGLE_DESKTOP_CLIENT_SECRET }}
+      FLION_UPDATER_PUBLIC_KEY: ${{ vars.FLION_UPDATER_PUBLIC_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+      APPLE_SIGNING_IDENTITY: '-'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: '1.90.0'
+          targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            src-tauri/target/
+          key: macos-universal-1.90-${{ hashFiles('src-tauri/Cargo.lock') }}-v1
+          restore-keys: macos-universal-1.90-
+      - run: npm ci
+      - run: npm test
+      - name: Tester le code natif et le Trousseau
+        run: cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib
+      - name: Préparer les mises à jour Mac signées
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          key = os.environ['FLION_UPDATER_PUBLIC_KEY'].strip()
+          assert key and os.environ['TAURI_SIGNING_PRIVATE_KEY'], 'Clés de mise à jour manquantes'
+          config = {'bundle': {'createUpdaterArtifacts': True}, 'plugins': {'updater': {'pubkey': key, 'endpoints': ['https://github.com/arnaudlegoatdesdev/notes/releases/latest/download/latest-macos.json']}}}
+          Path(os.environ['RUNNER_TEMP'], 'notes-mac-updater.json').write_text(json.dumps(config))
+          PY
+      - name: Compiler Notes pour Intel et Apple Silicon
+        run: npm run tauri -- build --ci --target universal-apple-darwin --config "$RUNNER_TEMP/notes-mac-updater.json"
+      - name: Vérifier et préparer les fichiers Mac
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict src-tauri/target/universal-apple-darwin/release/bundle/macos/Notes.app
+          lipo -verify_arch arm64 x86_64 src-tauri/target/universal-apple-darwin/release/bundle/macos/Notes.app/Contents/MacOS/Notes
+          python3 - <<'PY'
+          import json, shutil
+          from datetime import datetime, timezone
+          from pathlib import Path
+          root = Path('src-tauri/target/universal-apple-darwin/release/bundle')
+          out = Path('artifacts'); out.mkdir(exist_ok=True)
+          version = json.loads(Path('src-tauri/tauri.conf.json').read_text())['version']
+          dmg = list((root/'dmg').glob('*.dmg')); assert len(dmg) == 1
+          shutil.copyfile(dmg[0], out/f'Notes_{version}_universal.dmg')
+          archive = root/'macos/Notes.app.tar.gz'
+          name = f'Notes_{version}_universal.app.tar.gz'
+          shutil.copyfile(archive, out/name)
+          signature = Path(str(archive)+'.sig').read_text().strip()
+          (out/(name+'.sig')).write_text(signature)
+          platform = {'signature': signature, 'url': f'https://github.com/arnaudlegoatdesdev/notes/releases/download/v{version}/{name}'}
+          manifest = {'version': version, 'notes': 'Une nouvelle version de Notes pour Mac est disponible.', 'pub_date': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'platforms': {'darwin-aarch64': platform, 'darwin-x86_64': platform}}
+          (out/'latest-macos.json').write_text(json.dumps(manifest, indent=2))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: notes-macos
+          path: artifacts/
+          if-no-files-found: error

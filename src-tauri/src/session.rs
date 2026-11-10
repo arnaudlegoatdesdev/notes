@@ -31,16 +31,30 @@ pub(crate) fn read_google_user(client: &reqwest::blocking::Client, token: &str) 
     if !valid_user(&user) { return Err("L’identité Google est invalide.".into()); }
     Ok(user)
 }
-fn load(path: &Path) -> Result<Option<StoredSession>, String> {
-    let metadata = match fs::metadata(path) { Ok(v) => v, Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), Err(_) => return Err("Impossible de lire la connexion enregistrée.".into()) };
-    if metadata.len() == 0 || metadata.len() > 131072 { return Err("La connexion enregistrée est invalide.".into()); }
-    let bytes = fs::read(path).map_err(|_| "Impossible de lire la connexion enregistrée.".to_string())?;
-    let mut plain = unprotect(&bytes)?;
+fn decode_session(mut plain: Vec<u8>) -> Result<Option<StoredSession>, String> {
     let parsed = serde_json::from_slice::<StoredSession>(&plain); plain.fill(0);
     let value = parsed.map_err(|_| "La connexion enregistrée est invalide.".to_string())?;
     if value.version != 1 || !valid_user(&value.user) || value.client_id.is_empty() || value.client_id.len() > 2048 || value.access_token.len() > 32768 || value.refresh_token.as_ref().is_some_and(|v| v.is_empty() || v.len() > 32768) { return Err("La connexion enregistrée est invalide.".into()); }
     Ok(Some(value))
 }
+#[cfg(not(target_os = "macos"))]
+fn load(path: &Path) -> Result<Option<StoredSession>, String> {
+    let metadata = match fs::metadata(path) { Ok(v) => v, Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), Err(_) => return Err("Impossible de lire la connexion enregistrée.".into()) };
+    if metadata.len() == 0 || metadata.len() > 131072 { return Err("La connexion enregistrée est invalide.".into()); }
+    let bytes = fs::read(path).map_err(|_| "Impossible de lire la connexion enregistrée.".to_string())?;
+    let mut plain = unprotect(&bytes)?;
+    decode_session(plain)
+}
+#[cfg(target_os = "macos")]
+fn load(_: &Path) -> Result<Option<StoredSession>, String> {
+    match crate::keychain::read(crate::keychain::SERVICE)? { Some(plain) => decode_session(plain), None => Ok(None) }
+}
+#[cfg(target_os = "macos")]
+fn store(_: &Path, value: &StoredSession) -> Result<(), String> {
+    let mut plain = serde_json::to_vec(value).map_err(|_| "Impossible de mémoriser la connexion.".to_string())?;
+    let result = crate::keychain::write(crate::keychain::SERVICE, &plain); plain.fill(0); result
+}
+#[cfg(not(target_os = "macos"))]
 fn store(path: &Path, value: &StoredSession) -> Result<(), String> {
     let mut plain = serde_json::to_vec(value).map_err(|_| "Impossible de mémoriser la connexion.".to_string())?;
     let protected = protect(&plain); plain.fill(0); let protected = protected?;
@@ -98,6 +112,9 @@ pub async fn native_refresh_google(app: tauri::AppHandle, subject: String, clien
 #[tauri::command]
 pub fn native_clear_session(app: tauri::AppHandle) -> Result<(), String> {
     let _guard = SESSION_LOCK.lock().map_err(|_| "La connexion est occupée.".to_string())?;
+    #[cfg(target_os = "macos")]
+    { let _ = app; return crate::keychain::delete(crate::keychain::SERVICE); }
+    #[cfg(not(target_os = "macos"))]
     match fs::remove_file(session_path(&app)?) { Ok(()) => Ok(()), Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), Err(_) => Err("Impossible de fermer la connexion enregistrée.".into()) }
 }
 

@@ -1,5 +1,7 @@
 mod oauth;
 mod session;
+#[cfg(target_os = "macos")]
+mod keychain;
 
 #[tauri::command]
 fn updater_enabled() -> bool {
