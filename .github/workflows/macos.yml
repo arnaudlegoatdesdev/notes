@@ -29,7 +29,8 @@ jobs:
         with:
           toolchain: '1.90.0'
           targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry/
@@ -40,7 +41,9 @@ jobs:
       - run: npm ci
       - run: npm test
       - name: Tester le code natif et le Trousseau
-        run: cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib
+        run: |
+          native_target=$(rustc -vV | sed -n 's/^host: //p')
+          cargo test --locked --release --target "$native_target" --manifest-path src-tauri/Cargo.toml --lib
       - name: Préparer les mises à jour Mac signées
         run: |
           python3 - <<'PY'
@@ -53,11 +56,20 @@ jobs:
           PY
       - name: Compiler Notes pour Intel et Apple Silicon
         run: npm run tauri -- build --ci --target universal-apple-darwin --config "$RUNNER_TEMP/notes-mac-updater.json"
+      - name: Conserver la compilation universelle
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            src-tauri/target/
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Vérifier et préparer les fichiers Mac
         run: |
           set -euo pipefail
           codesign --verify --deep --strict src-tauri/target/universal-apple-darwin/release/bundle/macos/Notes.app
-          lipo -verify_arch arm64 x86_64 src-tauri/target/universal-apple-darwin/release/bundle/macos/Notes.app/Contents/MacOS/Notes
+          lipo src-tauri/target/universal-apple-darwin/release/bundle/macos/Notes.app/Contents/MacOS/Notes -verify_arch arm64 x86_64
           python3 - <<'PY'
           import json, shutil
           from datetime import datetime, timezone
@@ -81,3 +93,10 @@ jobs:
           name: notes-macos
           path: artifacts/
           if-no-files-found: error
+      - name: Conserver les paquets en cas d’échec de préparation
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: notes-macos-diagnostic
+          path: src-tauri/target/universal-apple-darwin/release/bundle/
+          if-no-files-found: ignore
