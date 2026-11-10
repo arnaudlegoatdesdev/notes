@@ -1,7 +1,6 @@
 import "fake-indexeddb/auto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  accessKeyFromPassword,
   clearLocalVault,
   createVault,
   inspectManifest,
@@ -14,7 +13,6 @@ import { createData } from "../src/seed";
 import {
   makeAccess,
   keyBytes,
-  migrateAccess,
   localAccess,
   saveAccess,
   publishAccess,
@@ -119,34 +117,20 @@ beforeEach(async () => {
   });
 });
 describe("passwordless account access", () => {
-  it("starts empty and opens the same files with the derived legacy key, without reencrypting them", async () => {
+  it("starts empty and reopens notes directly with the saved account key", async () => {
     expect(createData().channels).toEqual([]);
-    const source = await createVault("12345678", seed());
-    const attachment = await source.addFile(
-      new File(["photo data"], "photo.png", { type: "image/png" }),
-    );
-    const data = source.data,
-      message = note(data, "Ancienne note");
-    message.attachments.push(attachment as never);
-    data.messages.push(message);
-    await source.save(data);
-    const before = await source.readEncryptedFile(attachment.id),
-      manifest = await source.exportManifest();
-    const record = await migrateAccess(owner, "12345678", manifest);
-    source.lock();
+    const data = seed(),
+      record = makeAccess(owner, data.id);
+    await saveAccess(record);
+    const session = await createVault(keyBytes(record), data);
+    const next = session.data;
+    next.messages.push(note(next, "Ma note"));
+    await session.save(next);
+    session.lock();
     const reopened = await unlockVault(keyBytes(record));
-    expect(await reopened.readEncryptedFile(attachment.id)).toEqual(before);
-    expect(await (await reopened.readFile(attachment)).text()).toBe(
-      "photo data",
-    );
+    expect(reopened.data.messages[0].text).toBe("Ma note");
     expect((await localAccess(owner)).some((r) => r.vaultId === data.id)).toBe(
       true,
-    );
-    await expect(
-      migrateAccess("another-person", "12345678", manifest),
-    ).rejects.toThrow("autre compte");
-    expect(keyBytes(record)).toEqual(
-      await accessKeyFromPassword("12345678", manifest),
     );
   });
   it("never overwrites a valid local access key with a different remote key", async () => {
@@ -176,6 +160,30 @@ describe("passwordless account access", () => {
       "autre compte",
     );
   });
+  it("starts and reopens a fresh cloud space while obsolete encrypted snapshots remain untouched", async () => {
+    const initial = seed(),
+      record = makeAccess(owner, initial.id),
+      key = keyBytes(record);
+    const session = await createVault(key, initial),
+      cloud = new Drive();
+    const oldId = crypto.randomUUID();
+    const oldSnapshot = cloud.add(
+      `s-${oldId}--root.flion`,
+      new Uint8Array(100),
+    );
+    cloud.add(`notes-access-${oldId}.json`, new TextEncoder().encode("{}"));
+    await publishAccess(cloud, record);
+    await syncVault(cloud, session, key, owner);
+    expect(findHeads(await cloud.list())).toHaveLength(1);
+    expect(findHeads(await cloud.list())[0].file.name).toMatch(/^n-.*\.notes$/);
+    expect(cloud.files.has(oldSnapshot)).toBe(true);
+    session.lock();
+    await clearLocalVault();
+    writeSyncState(null);
+    const remoteAccess = await readCloudAccess(cloud, owner);
+    const phone = await openCloudVault(cloud, keyBytes(remoteAccess!), owner);
+    expect(phone.data.id).toBe(initial.id);
+  });
   it("exports a portable private backup and can reopen it without a password", async () => {
     const { record, session } = await setup();
     const archive = await packSession(session, record),
@@ -199,7 +207,7 @@ describe("concurrent PC and phone updates", () => {
     const remote = structuredClone(initial);
     remote.messages.push(note(remote, "Téléphone"));
     cloud.add(
-      `s-${crypto.randomUUID()}--${root}.flion`,
+      `n-${crypto.randomUUID()}--${root}.notes`,
       await sealManifest(key, remote),
     );
     const local = session.data;
@@ -225,9 +233,9 @@ describe("concurrent PC and phone updates", () => {
     await session.save(local);
     let raced = false;
     cloud.afterCreate = async (name) => {
-      if (name.startsWith("s-") && !raced) {
+      if (name.startsWith("n-") && !raced) {
         raced = true;
-        cloud.add(`s-${crypto.randomUUID()}--${root}.flion`, remoteManifest);
+        cloud.add(`n-${crypto.randomUUID()}--${root}.notes`, remoteManifest);
       }
     };
     const result = await syncVault(cloud, session, key, owner);
@@ -247,14 +255,14 @@ describe("concurrent PC and phone updates", () => {
     const remote = structuredClone(initial);
     remote.messages.push(note(remote, "Mobile"));
     cloud.add(
-      `s-${crypto.randomUUID()}--${root}.flion`,
+      `n-${crypto.randomUUID()}--${root}.notes`,
       await sealManifest(key, remote),
     );
     const local = session.data;
     local.messages.push(note(local, "PC"));
     await session.save(local);
     cloud.afterCreate = async (name) => {
-      if (name.startsWith("s-")) cloud.failList = true;
+      if (name.startsWith("n-")) cloud.failList = true;
     };
     let live;
     try {
@@ -305,7 +313,7 @@ describe("concurrent PC and phone updates", () => {
       d = crypto.randomUUID();
     const version = (id: string, parents = "root"): CloudFile => ({
       id: crypto.randomUUID(),
-      name: `s-${id}--${parents}.flion`,
+      name: `n-${id}--${parents}.notes`,
       size: 100,
     });
     const files = [

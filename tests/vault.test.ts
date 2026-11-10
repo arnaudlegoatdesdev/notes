@@ -8,7 +8,7 @@ function seed(limitBytes = 10 * 1024 * 1024): VaultData {
   return { version: 1, id: crypto.randomUUID(), createdAt: new Date().toISOString(), channels: [{ id: crypto.randomUUID(), name: 'Notes', description: 'Personnel', icon: 'hash' }], messages: [], preferences: { theme: 'slate', font: 'system', fontSize: 15, limitBytes } };
 }
 async function rawBytes(): Promise<string> {
-  const req = indexedDB.open('flion-vault-v1');
+  const req = indexedDB.open('notes-vault-v2');
   const db = await new Promise<IDBDatabase>((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
   const tx = db.transaction(['state', 'files']);
   const values = await Promise.all(['state', 'files'].map(name => new Promise<unknown[]>((resolve, reject) => { const request = tx.objectStore(name).getAll(); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); })));
@@ -16,7 +16,7 @@ async function rawBytes(): Promise<string> {
   return JSON.stringify(values);
 }
 async function storedFileKeys(): Promise<string[]> {
-  const req = indexedDB.open('flion-vault-v1');
+  const req = indexedDB.open('notes-vault-v2');
   const db = await new Promise<IDBDatabase>((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
   const keys = await new Promise<IDBValidKey[]>((resolve, reject) => { const request = db.transaction('files').objectStore('files').getAllKeys(); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
   db.close();
@@ -233,7 +233,7 @@ describe('coffre chiffré', () => {
     const { bundle, first } = await twoFileBundle();
     const imported = await importVaultStream(password, bundle.manifest, async item => bundle.files[item.id], null);
     const liveKeys = await storedFileKeys();
-    const open = indexedDB.open('flion-vault-v1');
+    const open = indexedDB.open('notes-vault-v2');
     const db = await new Promise<IDBDatabase>(resolve => { open.onsuccess = () => resolve(open.result); });
     const tx = db.transaction('files', 'readwrite');
     const done = new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });

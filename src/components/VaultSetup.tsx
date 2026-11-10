@@ -9,8 +9,6 @@ import {
 import { connectCloud, type CloudConnection } from "../cloud";
 import type { GoogleUser } from "../auth";
 import type { AccessRecord } from "../core/types";
-import { MIN_PASSPHRASE_LENGTH } from "../core/vault";
-import { findHead } from "../sync-v2";
 import { readCloudAccess } from "../access";
 import { unpackBundle } from "../archive";
 import GoogleDriveIcon from "./GoogleDriveIcon";
@@ -23,7 +21,6 @@ import {
   validateLimit,
 } from "../quota";
 export interface VaultOptions {
-  password?: string;
   access?: AccessRecord;
   limit: number;
   connection: CloudConnection | null;
@@ -43,13 +40,11 @@ export default function VaultSetup({
   onSubmit: (options: VaultOptions) => Promise<void>;
   onChangeAccount?: () => void;
 }) {
-  const [stage, setStage] = useState<"choice" | "limit" | "legacy">("choice");
+  const [stage, setStage] = useState<"choice" | "limit">("choice");
   const [storage, setStorage] = useState<"drive" | "local">("drive");
   const [connection, setConnection] = useState<CloudConnection | null>(null);
   const [maximum, setMaximum] = useState<number | undefined>();
-  const [limit, setLimit] = useState("1"),
-    [password, setPassword] = useState("");
-  const [backup, setBackup] = useState<File>();
+  const [limit, setLimit] = useState("1");
   const [working, setWorking] = useState(false),
     [error, setError] = useState("");
   const waiting = busy || working;
@@ -60,16 +55,11 @@ export default function VaultSetup({
       let max: number | undefined;
       if (storage === "drive") {
         const conn = await connectCloud("google", user.id),
-          files = await conn.list(),
-          head = findHead(files);
+          files = await conn.list();
         const access = await readCloudAccess(conn, user.id, files);
         setConnection(conn);
         if (access) {
           await onSubmit({ access, connection: conn, open: true, limit: GB });
-          return;
-        }
-        if (head) {
-          setStage("legacy");
           return;
         }
         if (restoreOnly)
@@ -108,10 +98,8 @@ export default function VaultSetup({
     try {
       await onSubmit({
         connection,
-        limit: stage === "legacy" ? GB : validateLimit(Number(limit), maximum),
-        open: stage === "legacy",
-        password: stage === "legacy" ? password : undefined,
-        backup,
+        limit: validateLimit(Number(limit), maximum),
+        open: false,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Impossible d’ouvrir Notes.");
@@ -195,11 +183,10 @@ export default function VaultSetup({
                           backup: file,
                           limit: GB,
                         });
-                      else {
-                        setBackup(file);
-                        setConnection(null);
-                        setStage("legacy");
-                      }
+                      else
+                        throw new Error(
+                          "Cette sauvegarde n’est pas compatible avec Notes.",
+                        );
                     })
                     .catch((e) =>
                       setError(
@@ -228,75 +215,45 @@ export default function VaultSetup({
             disabled={waiting}
             onClick={() => {
               setStage("choice");
-              setBackup(undefined);
-              setPassword("");
               setError("");
             }}
           >
             <ArrowLeft size={14} />
             Retour
           </button>
-          <h1>
-            {stage === "legacy"
-              ? "Mettre à jour mon espace"
-              : "Votre espace de stockage"}
-          </h1>
+          <h1>Votre espace de stockage</h1>
           <form onSubmit={(event) => void submit(event)}>
-            {stage === "limit" ? (
-              <>
-                <label htmlFor="setup-limit">Espace maximum pour Notes</label>
-                <div className="limit-input">
-                  <input
-                    id="setup-limit"
-                    type="number"
-                    min="0.001"
-                    max={
-                      maximum === undefined
-                        ? undefined
-                        : Math.floor(maximum / 1_000_000) / 1000
-                    }
-                    step="0.001"
-                    required
-                    value={limit}
-                    onChange={(e) => setLimit(e.target.value)}
-                    disabled={waiting}
-                  />
-                  <span>Go</span>
-                </div>
-                <p className="field-note">
-                  {maximum === undefined
-                    ? "Limite modifiable dans les paramètres."
-                    : `${formatBytes(maximum)} disponibles ${connection ? "sur Drive" : "en local"}.`}
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="field-note">
-                  Saisissez l’ancien mot de passe une dernière fois. Les
-                  prochaines ouvertures utiliseront votre compte Google.
-                </p>
-                <label htmlFor="setup-password">
-                  Ancien mot de passe du coffre
-                </label>
-                <input
-                  id="setup-password"
-                  type="password"
-                  autoComplete="current-password"
-                  minLength={MIN_PASSPHRASE_LENGTH}
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  disabled={waiting}
-                />
-              </>
-            )}
+            <label htmlFor="setup-limit">Espace maximum pour Notes</label>
+            <div className="limit-input">
+              <input
+                id="setup-limit"
+                type="number"
+                min="0.001"
+                max={
+                  maximum === undefined
+                    ? undefined
+                    : Math.floor(maximum / 1_000_000) / 1000
+                }
+                step="0.001"
+                required
+                value={limit}
+                onChange={(e) => setLimit(e.target.value)}
+                disabled={waiting}
+              />
+              <span>Go</span>
+            </div>
+            <p className="field-note">
+              {maximum === undefined
+                ? "Limite modifiable dans les paramètres."
+                : `${formatBytes(maximum)} disponibles ${connection ? "sur Drive" : "en local"}.`}
+            </p>
             <button className="button primary full" disabled={waiting}>
               {waiting ? (
                 <LoaderCircle size={17} className="spin" />
               ) : (
                 <ArrowRight size={17} />
               )}
-              {stage === "legacy" ? "Ouvrir Notes" : "Commencer"}
+              Commencer
             </button>
           </form>
         </>

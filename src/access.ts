@@ -1,9 +1,8 @@
 import type { AccessRecord } from "./core/types";
 import type { CloudConnection, CloudFile } from "./cloud";
-import { inspectManifest, accessKeyFromPassword } from "./core/vault";
 const uuid =
   /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
-const profilePattern = /^notes-access-([a-f0-9-]{36})\.json$/;
+const profilePattern = /^notes-account-([a-f0-9-]{36})\.json$/;
 export function validateAccess(value: unknown): AccessRecord {
   if (!value || typeof value !== "object")
     throw new Error("Accès Notes invalide.");
@@ -38,7 +37,7 @@ export function makeAccess(
   });
 }
 async function db(): Promise<IDBDatabase> {
-  const req = indexedDB.open("notes-access-v1", 1);
+  const req = indexedDB.open("notes-account-v1", 1);
   req.onupgradeneeded = () =>
     req.result.createObjectStore("keys", { keyPath: "vaultId" });
   return new Promise((resolve, reject) => {
@@ -89,22 +88,6 @@ export async function localAccess(owner: string): Promise<AccessRecord[]> {
     database.close();
   }
 }
-export async function migrateAccess(
-  owner: string,
-  pass: string,
-  manifest: Uint8Array,
-): Promise<AccessRecord> {
-  const data = await inspectManifest(pass, manifest);
-  if (data.owner && data.owner.subject !== owner)
-    throw new Error("Ce coffre appartient à un autre compte Google.");
-  const record = makeAccess(
-    owner,
-    data.id,
-    await accessKeyFromPassword(pass, manifest),
-  );
-  await saveAccess(record);
-  return record;
-}
 export function storageChoice(owner: string): "local" | "drive" | null {
   try {
     const v = localStorage.getItem(`notes.storage.${owner}`);
@@ -137,7 +120,7 @@ export async function readCloudAccess(
     const r = validateAccess(
       JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
     );
-    if (r.owner !== owner || file.name !== `notes-access-${r.vaultId}.json`)
+    if (r.owner !== owner || file.name !== `notes-account-${r.vaultId}.json`)
       throw new Error("Cette configuration appartient à un autre compte.");
     if (records.has(r.vaultId) && records.get(r.vaultId)!.key !== r.key)
       throw new Error("Deux clés différentes existent pour ces notes.");
@@ -166,7 +149,7 @@ export async function publishAccess(
     return;
   }
   await conn.create(
-    `notes-access-${record.vaultId}.json`,
+    `notes-account-${record.vaultId}.json`,
     new TextEncoder().encode(JSON.stringify(validateAccess(record))),
   );
   const verified = await readCloudAccess(conn, record.owner);

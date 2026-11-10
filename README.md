@@ -14,7 +14,7 @@ La limite maximale proposée correspond à l’espace libre annoncé par Google.
 
 Aucun mot de passe Notes n’est demandé. Sur un autre appareil, le même compte Google retrouve la configuration Drive et la clé de l’espace lorsque l’autorisation a déjà été accordée. Google peut encore demander un consentement ou une reconnexion. Le mode local ne synchronise pas le téléphone.
 
-Pour un coffre créé avant la version 0.3, l’ancien mot de passe est nécessaire une seule fois pour récupérer sa clé. Ce mot de passe n’est pas enregistré. Les pièces jointes ne sont pas rechiffrées ni renvoyées pendant cette migration.
+Les anciennes données d’essai ne sont pas reprises. Aucun parcours de migration ni mot de passe Notes n’est demandé.
 
 **Confidentialité :** la clé est conservée sur l’appareil et, en mode Drive, dans le dossier privé de Notes sur votre compte Google. Google peut techniquement accéder à cette clé. Cette version ne promet donc pas un chiffrement dont Google serait exclu. Les exports `.notes` contiennent également la clé et doivent rester privés.
 

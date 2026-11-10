@@ -30,9 +30,7 @@ describe("storage choice after Google sign-in", () => {
       screen.getByText("Aucune synchronisation sur le téléphone."),
     ).toBeTruthy();
     expect(screen.queryByText("OneDrive")).toBeNull();
-    fireEvent.click(
-      screen.getByRole("button", { name: /Stockage local/ }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /Stockage local/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continuer en local" }));
     await screen.findByLabelText("Espace maximum pour Notes");
     expect(screen.queryByLabelText(/mot de passe/i)).toBeNull();
@@ -78,5 +76,30 @@ describe("storage choice after Google sign-in", () => {
       "Drive est plein",
     );
     expect(screen.queryByLabelText("Mot de passe du coffre")).toBeNull();
+  });
+  it("ignores old Drive test files and offers a fresh workspace without a password", async () => {
+    const oldId = crypto.randomUUID();
+    vi.mocked(connectCloud).mockResolvedValue({
+      ...makeConnection(),
+      list: vi.fn().mockResolvedValue([
+        { id: "old-key", name: `notes-access-${oldId}.json`, size: 200 },
+        { id: "old-snapshot", name: `s-${oldId}--root.flion`, size: 100 },
+      ]),
+    } as never);
+    const save = vi.fn();
+    render(<VaultSetup user={user} busy={false} onSubmit={save} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Connecter Google Drive" }),
+    );
+    await screen.findByLabelText("Espace maximum pour Notes");
+    expect(screen.queryByLabelText(/mot de passe/i)).toBeNull();
+    fireEvent.submit(
+      screen.getByRole("button", { name: "Commencer" }).closest("form")!,
+    );
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({ open: false }),
+      ),
+    );
   });
 });

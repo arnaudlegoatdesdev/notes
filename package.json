@@ -1,6 +1,6 @@
 {
   "name": "notes",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Un espace personnel chiffré, organisé en salons, sur votre cloud.",
   "type": "module",

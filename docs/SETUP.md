@@ -39,4 +39,4 @@ La même origine garde le même stockage navigateur et les mêmes origines OAuth
 
 ## Validation réelle
 
-Connectez-vous avec un vrai compte Google. Vérifiez le choix local sans demande d’accès Drive, puis Drive avec lecture du quota, création sur Windows et ouverture sur téléphone. Testez une modification dans l’autre sens, deux envois simultanés, un quota atteint et une connexion interrompue. Les anciens coffres demandent leur mot de passe une seule fois, puis utilisent une clé sauvegardée sur Drive. La validation automatisée du dépôt ne prouve pas que l’audience et les API du projet Google ont été activées dans la console.
+Connectez-vous avec un vrai compte Google. Vérifiez le choix local sans demande d’accès Drive, puis Drive avec lecture du quota, création sur Windows et ouverture sur téléphone. Testez une modification dans l’autre sens, deux envois simultanés, un quota atteint et une connexion interrompue. Les données des anciennes versions d’essai sont ignorées sans demander de mot de passe. La validation automatisée du dépôt ne prouve pas que l’audience et les API du projet Google ont été activées dans la console.

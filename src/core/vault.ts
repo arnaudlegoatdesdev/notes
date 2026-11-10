@@ -1,6 +1,6 @@
 import type { Attachment, EncryptedBundle, VaultData } from './types';
 
-const DB_NAME = 'flion-vault-v1';
+const DB_NAME = 'notes-vault-v2';
 const DB_VERSION = 1;
 const VAULT_MAGIC = new TextEncoder().encode('FLIONV01');
 const FILE_MAGIC = new TextEncoder().encode('FLIONF01');
@@ -305,7 +305,7 @@ async function decryptManifest(manifest: Uint8Array, passphrase: VaultSecret): P
   const key = await derive(passphrase, salt);
   let bytes: ArrayBuffer;
   try { bytes = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: copy(iv), additionalData: concat(VAULT_MAGIC, salt) }, key, copy(ciphertext)); }
-  catch { throw new Error('Mot de passe incorrect ou coffre endommagé.'); }
+  catch { throw new Error(typeof passphrase === 'string' ? 'Mot de passe incorrect ou coffre endommagé.' : 'Impossible d’ouvrir cet espace Notes. Reconnectez-vous avec Google.'); }
   let data: unknown;
   try { data = JSON.parse(decoder.decode(bytes)); } catch { invalid(); }
   validateData(data);
@@ -320,13 +320,6 @@ async function decryptFile(bytes: Uint8Array, id: string, key: CryptoKey): Promi
 
 export async function inspectManifest(passphrase: VaultSecret, manifest: Uint8Array): Promise<VaultData> {
   return structuredClone((await decryptManifest(manifest, passphrase)).data);
-}
-/** Export only the derived key during the one-time legacy migration. */
-export async function accessKeyFromPassword(passphrase: string, manifest: Uint8Array): Promise<Uint8Array> {
-  await decryptManifest(manifest, passphrase); // Authenticate before exporting any key.
-  const { salt } = parseManifest(manifest);
-  const material = await crypto.subtle.importKey('raw', encoder.encode(passphrase), 'PBKDF2', false, ['deriveBits']);
-  return new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: copy(salt), iterations: ITERATIONS }, material, 256));
 }
 export async function localManifest(): Promise<Uint8Array | null> { const state = await readState(); return state ? copy(state.manifest) : null; }
 export async function sealManifest(secret: VaultSecret, data: VaultData, template?: Uint8Array): Promise<Uint8Array> {

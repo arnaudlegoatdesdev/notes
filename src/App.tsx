@@ -71,7 +71,6 @@ import {
   clearLocalVault,
   type VaultSession,
   inspectManifest,
-  MIN_PASSPHRASE_LENGTH,
   localManifest,
 } from "./core/vault";
 import {
@@ -82,7 +81,6 @@ import {
   type CloudQuota,
 } from "./cloud";
 import {
-  findHead,
   markDirty,
   openCloudVault,
   readSyncState,
@@ -103,7 +101,6 @@ import {
   keyBytes,
   localAccess,
   makeAccess,
-  migrateAccess,
   publishAccess,
   readCloudAccess,
   rememberStorage,
@@ -257,12 +254,11 @@ function Text({ text }: { text: string }) {
 
 export default function App() {
   const [data, setData] = useState<VaultData>(createData);
-  const [mode, setMode] = useState<
-    "login" | "setup" | "vault" | "locked" | "loading"
-  >("loading");
+  const [mode, setMode] = useState<"login" | "setup" | "vault" | "loading">(
+    "loading",
+  );
   const session = useRef<VaultSession | null>(null);
   const access = useRef<AccessRecord | null>(null);
-  const migrationConnection = useRef<CloudConnection | null>(null);
   const syncDone = useRef<Promise<void> | null>(null);
   const [identity, setIdentity] = useState<GoogleUser | null>(null);
   const [active, setActive] = useState("");
@@ -581,7 +577,7 @@ export default function App() {
     setQuota(null);
     setSyncError("");
     setSyncStatus("local");
-    setMode("locked");
+    setMode("login");
   };
   const choose = (id: string) => {
     setActive(id);
@@ -712,7 +708,6 @@ export default function App() {
   const signOut = () => {
     if (busyRef.current || syncLock.current) return;
     lock();
-    migrationConnection.current = null;
     forgetGoogleGrant();
     setIdentity(null);
     setMode("login");
@@ -762,16 +757,6 @@ export default function App() {
           setSyncStatus("pending");
           return;
         }
-        if (findHead(files)) {
-          migrationConnection.current = conn;
-          if (local) {
-            setConnection(conn);
-            setSyncStatus("pending");
-            return;
-          }
-          setMode("locked");
-          return;
-        }
         if (local && storageChoice(user.id) === "drive") {
           setConnection(conn);
           setSyncStatus("pending");
@@ -788,7 +773,7 @@ export default function App() {
       }
     }
     if (local) return;
-    setMode(manifest ? "locked" : "setup");
+    setMode("setup");
   };
   const finishSetup = (opts: VaultOptions) =>
     run(async () => {
@@ -799,13 +784,9 @@ export default function App() {
         throw new Error("Cet espace appartient à un autre compte Google.");
       if (opts.backup) {
         const bundle = await unpackBundle(opts.backup);
-        record =
-          bundle.access ||
-          (await migrateAccess(
-            identity.id,
-            opts.password || "",
-            bundle.manifest,
-          ));
+        record = bundle.access;
+        if (!record)
+          throw new Error("Cette sauvegarde n’est pas compatible avec Notes.");
         if (record.owner !== identity.id)
           throw new Error(
             "Cette sauvegarde appartient à un autre compte Google.",
@@ -818,15 +799,8 @@ export default function App() {
         next = await importVault(keyBytes(record), bundle);
         writeSyncState(null);
       } else if (opts.open && opts.connection) {
-        if (!record) {
-          const head = findHead(await opts.connection.list());
-          if (!head) throw new Error("Aucune note sur Drive.");
-          record = await migrateAccess(
-            identity.id,
-            opts.password || "",
-            await opts.connection.read(head.file.id),
-          );
-        }
+        if (!record)
+          throw new Error("Configuration Notes introuvable sur Drive.");
         await saveAccess(record);
         if (await hasVault()) {
           next = await unlockVault(keyBytes(record));
@@ -851,7 +825,6 @@ export default function App() {
         writeSyncState(null);
       }
       await replaceSession(next, record);
-      migrationConnection.current = null;
       rememberStorage(identity.id, opts.connection ? "drive" : "local");
       setConnection(opts.connection);
       setModal(null);
@@ -894,7 +867,7 @@ export default function App() {
                 try {
                   await resumeAccount(user);
                 } catch (e) {
-                  setMode((await hasVault()) ? "locked" : "setup");
+                  setMode("setup");
                   throw e;
                 }
               })
@@ -925,91 +898,6 @@ export default function App() {
           </div>
           {setup()}
         </section>
-        {notice && <Toast text={notice} onClose={() => setNotice("")} />}
-      </div>
-    );
-  if (mode === "locked")
-    return (
-      <div className="access-screen">
-        <section className="access-card">
-          <div className="brand-title">
-            <Brand />
-            <span>Notes</span>
-          </div>
-          <h1>Mettre à jour mon espace</h1>
-          <p>Saisissez l’ancien mot de passe une dernière fois.</p>
-          <p>{identity.email}</p>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              const pass = String(
-                new FormData(event.currentTarget).get("password"),
-              );
-              void run(async () => {
-                const conn = migrationConnection.current;
-                const manifest =
-                  (await localManifest()) ||
-                  (conn
-                    ? await conn.read(findHead(await conn.list())!.file.id)
-                    : null);
-                if (!manifest)
-                  throw new Error("Retrouvez vos notes sur Google Drive.");
-                const record = await migrateAccess(identity.id, pass, manifest);
-                const next = (await hasVault())
-                  ? await unlockVault(keyBytes(record))
-                  : await openCloudVault(conn!, keyBytes(record), identity.id);
-                await replaceSession(next, record);
-                if (conn) {
-                  setConnection(conn);
-                  rememberStorage(identity.id, "drive");
-                }
-                setSyncStatus(conn ? "pending" : "local");
-              });
-            }}
-          >
-            <label htmlFor="unlock">Ancien mot de passe du coffre</label>
-            <input
-              id="unlock"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              minLength={MIN_PASSPHRASE_LENGTH}
-              required
-              autoFocus
-            />
-            <button className="button primary full" disabled={busy}>
-              {busy ? (
-                <LoaderCircle size={17} className="spin" />
-              ) : (
-                <LockKeyhole size={16} />
-              )}
-              Ouvrir Notes
-            </button>
-          </form>
-          <button
-            className="text-button center"
-            onClick={() => setModal("onboarding")}
-          >
-            Retrouver mes notes sur Drive
-          </button>
-          <button
-            className="text-button center"
-            disabled={busy}
-            onClick={signOut}
-          >
-            Changer de compte
-          </button>
-        </section>
-        {modal === "onboarding" && (
-          <Modal
-            title="Retrouver mon coffre"
-            onClose={() => {
-              if (!busy) setModal(null);
-            }}
-          >
-            {setup(true)}
-          </Modal>
-        )}
         {notice && <Toast text={notice} onClose={() => setNotice("")} />}
       </div>
     );

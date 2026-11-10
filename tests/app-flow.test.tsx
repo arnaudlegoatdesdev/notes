@@ -171,23 +171,41 @@ describe("Notes account and empty workspace flow", () => {
       expect(localStorage.getItem(`notes.storage.${user.id}`)).toBe("drive"),
     );
   });
-  it("asks for an old password only once during migration", async () => {
-    const initial = createData();
-    initial.owner = { provider: "google", subject: user.id };
-    const legacy = await createVault("12345678", initial);
-    legacy.lock();
-    rememberStorage(user.id, "local");
+  it("ignores obsolete test storage and never asks for an old password", async () => {
+    await new Promise<void>((resolve, reject) => {
+      const req = indexedDB.open("flion-vault-v1", 1);
+      req.onupgradeneeded = () => {
+        req.result.createObjectStore("state");
+      };
+      req.onsuccess = () => {
+        const db = req.result,
+          tx = db.transaction("state", "readwrite");
+        tx.objectStore("state").put(
+          {
+            revision: crypto.randomUUID(),
+            manifest: new Uint8Array([1, 2, 3]),
+          },
+          "vault",
+        );
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
     render(<App />);
     await login();
-    fireEvent.change(
-      await screen.findByLabelText("Ancien mot de passe du coffre"),
-      { target: { value: "12345678" } },
+    await screen.findByRole("heading", { name: "Où garder vos notes ?" });
+    expect(screen.queryByLabelText(/mot de passe/i)).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Stockage local Aucune synchronisation/,
+      }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Ouvrir Notes" }));
-    await screen.findByRole("heading", { name: "Créez votre premier salon" });
-    cleanup();
-    render(<App />);
-    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Continuer en local" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Commencer" }));
     await screen.findByRole("heading", { name: "Créez votre premier salon" });
     expect(screen.queryByLabelText(/mot de passe/i)).toBeNull();
   });

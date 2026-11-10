@@ -9,12 +9,12 @@ import {
   type VaultSecret,
   type VaultSession,
 } from "./core/vault";
-import { readSyncState, writeSyncState } from "./sync";
+import { readSyncState, writeSyncState } from "./sync-state";
 import { mergeVault } from "./merge";
-export { markDirty, readSyncState, writeSyncState } from "./sync";
+export { markDirty, readSyncState, writeSyncState } from "./sync-state";
 const uuid = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
 const pattern = new RegExp(
-  `^s-(${uuid})--(root|${uuid}(?:--${uuid}){0,2})\\.flion$`,
+  `^n-(${uuid})--(root|${uuid}(?:--${uuid}){0,2})\\.notes$`,
 );
 export interface Version {
   id: string;
@@ -298,7 +298,7 @@ async function performSync(
       if (state?.head)
         merged = mergeVault((await read(state.head)).data, local, remote);
       else {
-        // This also handles an interrupted migration before a local binding was saved.
+        // Recover a missing local binding from the root snapshot.
         const roots = [...graph.values()].filter((v) => !v.parents.length);
         if (roots.length !== 1)
           throw new Error("Impossible de retrouver l’origine de ces notes.");
@@ -376,7 +376,7 @@ async function performSync(
     if (!remoteSame) {
       head = crypto.randomUUID();
       await conn.create(
-        `s-${head}--${heads.length ? heads.map((h) => h.id).join("--") : "root"}.flion`,
+        `n-${head}--${heads.length ? heads.map((h) => h.id).join("--") : "root"}.notes`,
         manifest,
       );
     }

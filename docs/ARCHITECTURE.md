@@ -6,13 +6,13 @@ React, TypeScript et Vite fournissent le site mobile. Tauri embarque la même in
 
 Google vérifie l’identité via UserInfo après OAuth. La connexion demande `openid email profile`, réutilise les autorisations précédemment accordées et reste distincte du premier consentement Drive. Le choix local ne déclenche pas une autorisation Drive. Les jetons d’accès restent en mémoire. Ils peuvent expirer et nécessiter une reconnexion.
 
-## Clés et migration
+## Clés
 
 Chaque nouvel espace reçoit une clé aléatoire de 256 bits. AES-256-GCM chiffre les métadonnées et chaque pièce jointe avec un IV aléatoire et des données authentifiées propres au format. La clé est conservée dans une base IndexedDB séparée, associée au sujet Google et à l’identifiant du coffre. La connexion Google détermine quelle clé ouvrir ; elle ne produit pas elle-même cette clé.
 
 Avec Drive, un fichier `notes-access-<identifiant>.json` contient cette clé dans le dossier privé d’application. Cela permet à un nouvel appareil autorisé de retrouver l’espace sans mot de passe ni serveur Notes. Ce dossier est accessible au fournisseur Google : il ne s’agit pas d’une promesse de chiffrement excluant Google. Une version modifiée de l’application ou un appareil compromis peut également lire les clés.
 
-Les anciens coffres utilisent PBKDF2-SHA256 avec 600 000 itérations. La migration demande leur ancien mot de passe une fois, vérifie le déchiffrement et conserve uniquement la clé dérivée. Les enveloppes et les pièces jointes restent inchangées pour éviter une réécriture de toutes les données. Le mot de passe n’est enregistré ni localement ni sur Drive. Les identifiants historiques de stockage et de l’application Windows sont conservés pour retrouver les données existantes.
+Les anciennes données d’essai sont ignorées. Le stockage local, les clés, la liaison de synchronisation et les noms d’instantanés cloud utilisent une nouvelle génération indépendante. Les fichiers d’essai existants ne sont pas supprimés. Aucun écran de migration ni ancien mot de passe n’est demandé.
 
 Il n’y a plus de verrouillage automatique ou de mot de passe Notes. La déconnexion abandonne les références de session aux données et aux clés. Le stockage persistant reste récupérable après la prochaine connexion Google.
 
@@ -32,7 +32,7 @@ La limite Notes inclut l’historique et la configuration cloud. Chaque envoi v�
 
 ## Sauvegardes
 
-L’export `.notes` portable contient les objets chiffrés et la clé de l’espace. Le fichier permet donc de récupérer les données et doit rester privé. Les anciens exports protégés par mot de passe restent importables avec une migration unique. L’index complet est vérifié avant l’allocation des contenus. L’export regroupé est limité à 512 Mio ; la synchronisation Drive reste progressive.
+L’export `.notes` portable contient les objets chiffrés et la clé de l’espace. Le fichier permet donc de récupérer les données et doit rester privé. L’import exige une sauvegarde contenant la clé du compte. Les anciens exports sans clé ne sont pas pris en charge. L’index complet est vérifié avant l’allocation des contenus. L’export regroupé est limité à 512 Mio ; la synchronisation Drive reste progressive.
 
 ## Windows
 
