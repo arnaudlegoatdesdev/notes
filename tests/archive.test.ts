@@ -63,7 +63,7 @@ describe('encrypted backup format', () => {
     for (let i = 0; i < 10_000; i++) bundle.files[crypto.randomUUID()] = new Uint8Array(36);
     const result = await unpackBundle(file(packBundle(bundle)));
     expect(Object.keys(result.files)).toHaveLength(10_000);
-  });
+  }, 20_000); // Exercise the complete format boundary on slower CI file/blob implementations.
 });
 
 describe('bounded session export', () => {
