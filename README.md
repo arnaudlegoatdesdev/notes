@@ -12,11 +12,13 @@ Connectez-vous avec Google. Choisissez **Google Drive**, recommandé pour retrou
 
 La limite maximale proposée correspond à l’espace libre annoncé par Google. Si le compte dispose de 112 Go libres, vous pouvez choisir jusqu’à 112 Go. Chaque transfert vérifie aussi le quota réel du compte.
 
-Aucun mot de passe Notes n’est demandé. Sur un autre appareil, le même compte Google retrouve la configuration Drive et la clé de l’espace lorsque l’autorisation a déjà été accordée. Google peut encore demander un consentement ou une reconnexion. Le mode local ne synchronise pas le téléphone.
+Aucun mot de passe Notes n’est demandé. Fermer puis rouvrir Notes conserve la connexion et redonne accès à la copie locale, même hors ligne. Le bouton Déconnexion efface la session mémorisée. Sur un autre appareil, le même compte Google retrouve la configuration Drive et la clé de l’espace lorsque l’autorisation a déjà été accordée. Google peut encore demander un consentement ou une reconnexion. Le mode local ne synchronise pas le téléphone.
 
 Les anciennes données d’essai ne sont pas reprises. Aucun parcours de migration ni mot de passe Notes n’est demandé.
 
 **Confidentialité :** la clé est conservée sur l’appareil et, en mode Drive, dans le dossier privé de Notes sur votre compte Google. Google peut techniquement accéder à cette clé. Cette version ne promet donc pas un chiffrement dont Google serait exclu. Les exports `.notes` contiennent également la clé et doivent rester privés.
+
+Sur Windows, l’accès Google est renouvelé automatiquement. Dans le navigateur, Notes reste connecté lorsque le jeton Google expire ; seule la synchronisation Drive peut demander une nouvelle autorisation. Le modèle Google pour les sites statiques impose alors une action de l’utilisateur : [documentation Google](https://developers.google.com/identity/oauth2/web/guides/use-token-model).
 
 ## Fonctionnalités
 
@@ -30,7 +32,7 @@ Les anciennes données d’essai ne sont pas reprises. Aucun parcours de migrati
 
 ## Hébergement et comptes
 
-Aucun serveur de données ni base de comptes n’est géré par l’auteur. Google vérifie l’identité ; l’application appelle directement ses API. Le sujet Google est conservé dans le coffre chiffré pour l’associer au compte. Les jetons ne sont pas enregistrés dans le stockage persistant.
+Aucun serveur de données ni base de comptes n’est géré par l’auteur. Google vérifie l’identité ; l’application appelle directement ses API. Le sujet Google est conservé dans le coffre chiffré pour l’associer au compte. La session est mémorisée jusqu’à une déconnexion explicite. Dans le navigateur, le profil et les jetons d’accès encore valides sont chiffrés dans IndexedDB avec une clé non exportable. Sur Windows, la connexion et le jeton de renouvellement sont protégés par Windows DPAPI.
 
 Le site est statique, construit avec React, TypeScript et Vite. Cloudflare Pages peut le publier depuis ce dépôt : branche `main`, Node 24, commande `npm run build`, sortie `dist`. Le domaine est `notes.flion.fr`. [Configuration](docs/SETUP.md).
 

@@ -15,7 +15,7 @@ import { clearLocalVault, createVault, unlockVault } from "../src/core/vault";
 import { createData } from "../src/seed";
 import { selectVaultAccount } from "../src/core/vault";
 import { selectSyncAccount } from "../src/sync-state";
-import { signInGoogle } from "../src/auth";
+import { signInGoogle, restoreGoogleSession, signOutGoogle } from "../src/auth";
 import { connectCloud } from "../src/cloud";
 import { driveGrant } from "../src/cloud/google";
 import {
@@ -33,6 +33,8 @@ const user = {
 };
 vi.mock("../src/auth", async (original) => ({
   ...(await original<object>()),
+  restoreGoogleSession: vi.fn(async () => null),
+  signOutGoogle: vi.fn(async () => {}),
   signInGoogle: vi.fn(async () => ({
     id: "google-flow-person",
     name: "Test",
@@ -73,6 +75,8 @@ beforeEach(async () => {
   vi.mocked(driveGrant).mockReturnValue(null);
   vi.mocked(connectCloud).mockReset();
   vi.mocked(signInGoogle).mockResolvedValue(user);
+  vi.mocked(restoreGoogleSession).mockResolvedValue(null);
+  vi.mocked(signOutGoogle).mockClear();
 });
 afterEach(() => {
   cleanup();
@@ -218,6 +222,29 @@ describe("Notes account and empty workspace flow", () => {
     await login();
     await screen.findByRole("heading", { name: "Compte A", level: 1 });
     expect(screen.queryByLabelText(/mot de passe/i)).toBeNull();
+  });
+  it("restores the account and notes after restart without opening Google, then honors sign-out", async () => {
+    const initial = createData();
+    initial.owner = { provider: "google", subject: user.id };
+    initial.channels.push({
+      id: crypto.randomUUID(),
+      name: "Retrouvé",
+      description: "",
+      icon: "hash",
+    });
+    const record = makeAccess(user.id, initial.id);
+    await saveAccess(record);
+    await createVault(keyBytes(record), initial);
+    rememberStorage(user.id, "local");
+    vi.mocked(signInGoogle).mockClear();
+    vi.mocked(restoreGoogleSession).mockResolvedValue(user);
+    render(<App />);
+    await screen.findByRole("heading", { name: "Retrouvé", level: 1 });
+    expect(signInGoogle).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Paramètres" }));
+    fireEvent.click(screen.getByRole("button", { name: "Déconnexion" }));
+    await screen.findByRole("button", { name: "Continuer avec Google" });
+    expect(signOutGoogle).toHaveBeenCalledTimes(1);
   });
   it("ignores obsolete test storage and never asks for an old password", async () => {
     await new Promise<void>((resolve, reject) => {

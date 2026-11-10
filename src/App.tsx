@@ -98,7 +98,7 @@ import ImageViewer from "./components/ImageViewer";
 import VaultSetup, { type VaultOptions } from "./components/VaultSetup";
 import GoogleMark from "./components/GoogleMark";
 import GoogleDriveIcon from "./components/GoogleDriveIcon";
-import { driveGrant, forgetGoogleGrant } from "./cloud/google";
+import { driveGrant } from "./cloud/google";
 import {
   keyBytes,
   localAccess,
@@ -116,7 +116,13 @@ import {
   latestWindowsDownload,
   type WindowsDownload,
 } from "./windows-install";
-import { signInGoogle, assertVaultOwner, type GoogleUser } from "./auth";
+import {
+  signInGoogle,
+  restoreGoogleSession,
+  signOutGoogle,
+  assertVaultOwner,
+  type GoogleUser,
+} from "./auth";
 import { availableCloudBytes, formatBytes, validateLimit, GB } from "./quota";
 
 const icons = {
@@ -373,14 +379,43 @@ export default function App() {
   };
   useEffect(() => {
     let canceled = false;
-    hasVault()
-      .then(() => {
-        if (!canceled) setMode("login");
+    busyRef.current = true;
+    setBusy(true);
+    void restoreGoogleSession()
+      .then(async (user) => {
+        if (canceled) return;
+        if (!user) {
+          setMode("login");
+          return;
+        }
+        setIdentity(user);
+        try {
+          await resumeAccount(user);
+        } catch (error) {
+          if (!canceled) {
+            setMode("setup");
+            setNotice(
+              error instanceof Error
+                ? error.message
+                : "Google Drive est indisponible.",
+            );
+          }
+        }
       })
-      .catch(() => {
+      .catch((error) => {
         if (!canceled) {
           setMode("login");
-          setNotice("Le stockage local est indisponible dans ce navigateur.");
+          setNotice(
+            error instanceof Error
+              ? error.message
+              : "Impossible de retrouver la connexion.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!canceled) {
+          busyRef.current = false;
+          setBusy(false);
         }
       });
     return () => {
@@ -709,10 +744,26 @@ export default function App() {
 
   const signOut = () => {
     if (busyRef.current || syncLock.current) return;
-    lock();
-    forgetGoogleGrant();
-    setIdentity(null);
-    setMode("login");
+    busyRef.current = true;
+    setBusy(true);
+    void signOutGoogle()
+      .then(() => {
+        busyRef.current = false;
+        lock();
+        setIdentity(null);
+        setMode("login");
+      })
+      .catch((error) =>
+        setNotice(
+          error instanceof Error
+            ? error.message
+            : "Impossible de fermer la session.",
+        ),
+      )
+      .finally(() => {
+        busyRef.current = false;
+        setBusy(false);
+      });
   };
   const resumeAccount = async (user: GoogleUser) => {
     selectVaultAccount(user.id);
@@ -733,8 +784,26 @@ export default function App() {
         }
       }
     }
-    if (storageChoice(user.id) !== "local" && driveGrant(user.id)) {
-      const conn = await connectCloud("google", user.id);
+    if (
+      storageChoice(user.id) !== "local" &&
+      (driveGrant(user.id) || (isDesktop && storageChoice(user.id) === "drive"))
+    ) {
+      let conn: CloudConnection;
+      try {
+        conn = await connectCloud("google", user.id, { interactive: false });
+      } catch (error) {
+        if (local) {
+          setSyncStatus("error");
+          setNeedsReconnect(true);
+          setSyncError(
+            error instanceof Error
+              ? error.message
+              : "Reconnectez Google Drive pour reprendre la synchronisation.",
+          );
+          return;
+        }
+        throw error;
+      }
       try {
         const files = await conn.list(),
           record = await readCloudAccess(conn, user.id, files);
@@ -776,7 +845,16 @@ export default function App() {
         throw e;
       }
     }
-    if (local) return;
+    if (local) {
+      if (storageChoice(user.id) === "drive") {
+        setSyncStatus("error");
+        setNeedsReconnect(true);
+        setSyncError(
+          "Reconnectez Google Drive pour reprendre la synchronisation.",
+        );
+      }
+      return;
+    }
     setMode("setup");
   };
   const finishSetup = (opts: VaultOptions) =>

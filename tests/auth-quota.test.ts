@@ -1,3 +1,5 @@
+import "fake-indexeddb/auto";
+import { clearWebLogin } from "../src/session-storage";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   authorizeGoogle,
@@ -13,7 +15,8 @@ import {
   GB,
 } from "../src/quota";
 import { createData } from "../src/seed";
-afterEach(() => {
+afterEach(async () => {
+  await clearWebLogin();
   forgetGoogleGrant();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -75,15 +78,13 @@ describe("Google identity independent from Drive", () => {
     );
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          json({
-            sub: "google-person-123",
-            email: "person@example.com",
-            email_verified: true,
-          }),
-        ),
+      vi.fn().mockResolvedValue(
+        json({
+          sub: "google-person-123",
+          email: "person@example.com",
+          email_verified: true,
+        }),
+      ),
     );
     await signInGoogle();
     expect(start.mock.calls[0][0]).toMatchObject({

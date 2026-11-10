@@ -38,16 +38,41 @@ declare global {
   }
 }
 
-export interface GoogleCredentials { accessToken: string; expiresIn: number; scope?: string }
-let grant: (GoogleCredentials & { subject: string; expiresAt: number }) | null = null;
-export function rememberGoogleGrant(credentials: GoogleCredentials, subject: string): void {
-  grant = { ...credentials, subject, expiresAt: Date.now() + credentials.expiresIn * 1000 };
+export interface GoogleCredentials {
+  accessToken: string;
+  expiresIn: number;
+  scope?: string;
+  user?: import("../auth").GoogleUser;
+}
+let grant: (GoogleCredentials & { subject: string; expiresAt: number }) | null =
+  null;
+export function rememberGoogleGrant(
+  credentials: GoogleCredentials,
+  subject: string,
+): void {
+  grant = {
+    ...credentials,
+    subject,
+    expiresAt: Date.now() + credentials.expiresIn * 1000,
+  };
 }
 export function driveGrant(subject: string): GoogleCredentials | null {
-  if (!grant || grant.subject !== subject || grant.expiresAt < Date.now() + 60_000 || !grant.scope?.split(/\s+/).includes(APPDATA_SCOPE)) return null;
-  return { accessToken: grant.accessToken, expiresIn: Math.floor((grant.expiresAt - Date.now()) / 1000), scope: grant.scope };
+  if (
+    !grant ||
+    grant.subject !== subject ||
+    grant.expiresAt < Date.now() + 60_000 ||
+    !grant.scope?.split(/\s+/).includes(APPDATA_SCOPE)
+  )
+    return null;
+  return {
+    accessToken: grant.accessToken,
+    expiresIn: Math.floor((grant.expiresAt - Date.now()) / 1000),
+    scope: grant.scope,
+  };
 }
-export function forgetGoogleGrant(): void { grant = null; }
+export function forgetGoogleGrant(): void {
+  grant = null;
+}
 let identityPromise: Promise<void> | undefined;
 export function prepareGoogleIdentity(): Promise<void> {
   if (window.google?.accounts?.oauth2) return Promise.resolve();
@@ -116,7 +141,11 @@ export async function authorizeGoogle(
         resolve({
           accessToken: response.access_token,
           expiresIn: Number(response.expires_in ?? 3600),
-          scope: response.scope || (purpose === "drive" ? `${LOGIN_SCOPE} ${APPDATA_SCOPE}` : LOGIN_SCOPE),
+          scope:
+            response.scope ||
+            (purpose === "drive"
+              ? `${LOGIN_SCOPE} ${APPDATA_SCOPE}`
+              : LOGIN_SCOPE),
         });
       },
       error_callback: () =>
@@ -127,7 +156,10 @@ export async function authorizeGoogle(
           ),
         ),
     });
-    client.requestAccessToken({ prompt: purpose === "login" ? "select_account" : "", ...(subject ? { login_hint: subject } : {}) });
+    client.requestAccessToken({
+      prompt: purpose === "login" ? "select_account" : "",
+      ...(subject ? { login_hint: subject } : {}),
+    });
   });
 }
 

@@ -4,7 +4,7 @@
 
 React, TypeScript et Vite fournissent le site mobile. Tauri embarque la même interface dans Windows avec un noyau Rust pour OAuth et les mises à jour. Le site est statique. Aucun serveur de données ni base de comptes Notes n’est nécessaire.
 
-Google vérifie l’identité via UserInfo après OAuth. La connexion demande `openid email profile`, réutilise les autorisations précédemment accordées et reste distincte du premier consentement Drive. Le choix local ne déclenche pas une autorisation Drive. Les jetons d’accès restent en mémoire. Ils peuvent expirer et nécessiter une reconnexion.
+Google vérifie l’identité via UserInfo après OAuth. La connexion demande `openid email profile`, réutilise les autorisations précédemment accordées et reste distincte du premier consentement Drive. Le choix local ne déclenche pas une autorisation Drive. Le compte Notes reste ouvert après fermeture de l’application ou de l’onglet. Sur le web, IndexedDB conserve le profil et le jeton d’accès chiffrés avec une clé Web Crypto non exportable. L’expiration du jeton retire uniquement l’accès Drive, sans déconnecter Notes ou fermer la copie locale. Le modèle OAuth implicite Google pour le web impose une action utilisateur pour obtenir un nouveau jeton.
 
 ## Clés
 
@@ -14,7 +14,7 @@ Avec Drive, un fichier `notes-access-<identifiant>.json` contient cette clé dan
 
 Les anciennes données d’essai sont ignorées. Le stockage local, les clés, la liaison de synchronisation et les noms d’instantanés cloud utilisent une nouvelle génération indépendante. Les fichiers d’essai existants ne sont pas supprimés. Aucun écran de migration ni ancien mot de passe n’est demandé.
 
-Il n’y a plus de verrouillage automatique ou de mot de passe Notes. La déconnexion abandonne les références de session aux données et aux clés. Le stockage persistant reste récupérable après la prochaine connexion Google.
+Il n’y a plus de verrouillage automatique ou de mot de passe Notes. La déconnexion abandonne les références de session aux données et aux clés. La déconnexion efface aussi la session mémorisée. Les notes locales restent disponibles après une nouvelle connexion Google.
 
 ## Synchronisation
 
@@ -35,6 +35,8 @@ La limite Notes inclut l’historique et la configuration cloud. Chaque envoi v�
 L’export `.notes` portable contient les objets chiffrés et la clé de l’espace. Le fichier permet donc de récupérer les données et doit rester privé. L’import exige une sauvegarde contenant la clé du compte. Les anciens exports sans clé ne sont pas pris en charge. L’index complet est vérifié avant l’allocation des contenus. L’export regroupé est limité à 512 Mio ; la synchronisation Drive reste progressive.
 
 ## Windows
+
+La session native est chiffrée par DPAPI pour l’utilisateur Windows courant. Le jeton de renouvellement reste dans le noyau Rust et n’est jamais renvoyé à la WebView. L’accès hors ligne Google permet de renouveler les jetons d’accès à l’expiration ou après un refus 401. La déconnexion supprime ce fichier de session. Aucun stockage en clair de secours n’est utilisé.
 
 OAuth utilise le navigateur système, PKCE S256, un état aléatoire et un retour limité à l’interface locale pendant trois minutes. Les clients web et Windows doivent appartenir au même projet Google pour partager le dossier d’application.
 

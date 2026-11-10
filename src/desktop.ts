@@ -5,6 +5,7 @@ export interface NativeToken {
   accessToken: string;
   expiresIn: number;
   scope?: string;
+  user?: import("./auth").GoogleUser;
 }
 
 export async function nativeAuthorize(
@@ -33,6 +34,33 @@ export async function nativeAuthorize(
         ? import.meta.env.VITE_GOOGLE_DESKTOP_CLIENT_SECRET || null
         : null,
   });
+}
+
+export interface NativeSavedSession {
+  user: import("./auth").GoogleUser;
+  credentials: NativeToken | null;
+}
+export async function nativeCachedSession(): Promise<NativeSavedSession | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<NativeSavedSession | null>("native_cached_session");
+}
+export async function nativeRefreshGoogle(
+  subject: string,
+  force = false,
+): Promise<NativeToken | null> {
+  if (typeof navigator !== "undefined" && navigator.onLine === false)
+    throw new Error("Vous êtes hors ligne.");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<NativeToken | null>("native_refresh_google", {
+    subject,
+    force,
+    clientId: import.meta.env.VITE_GOOGLE_DESKTOP_CLIENT_ID,
+    clientSecret: import.meta.env.VITE_GOOGLE_DESKTOP_CLIENT_SECRET || null,
+  });
+}
+export async function nativeClearSession(): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("native_clear_session");
 }
 
 export async function checkForUpdate(): Promise<{

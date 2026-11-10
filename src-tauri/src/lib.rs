@@ -1,4 +1,5 @@
 mod oauth;
+mod session;
 
 #[tauri::command]
 fn updater_enabled() -> bool {
@@ -11,7 +12,7 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().pubkey(key.trim()).build());
     }
     builder
-        .invoke_handler(tauri::generate_handler![oauth::native_authorize, updater_enabled])
+        .invoke_handler(tauri::generate_handler![oauth::native_authorize, session::native_cached_session, session::native_refresh_google, session::native_clear_session, updater_enabled])
         .run(tauri::generate_context!())
         .expect("Impossible de démarrer Notes");
 }

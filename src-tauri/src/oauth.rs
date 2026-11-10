@@ -14,9 +14,10 @@ use url::Url;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeToken {
-    access_token: String,
-    expires_in: u64,
-    scope: Option<String>,
+    pub access_token: String,
+    pub expires_in: u64,
+    pub scope: Option<String>,
+    pub user: Option<crate::session::GoogleProfile>,
 }
 
 #[derive(Deserialize)]
@@ -25,6 +26,7 @@ struct TokenResponse {
     expires_in: u64,
     token_type: String,
     scope: Option<String>,
+    refresh_token: Option<String>,
 }
 
 struct Provider {
@@ -154,7 +156,7 @@ fn wait_for_callback(listener: TcpListener, state: &str) -> Result<String, Strin
     Err("La connexion a expiré. Relancez-la depuis Notes.".into())
 }
 
-fn authorize(provider_name: String, client_id: String, client_secret: Option<String>, purpose: String, login_hint: Option<String>) -> Result<NativeToken, String> {
+fn authorize(provider_name: String, client_id: String, client_secret: Option<String>, purpose: String, login_hint: Option<String>, session_path: std::path::PathBuf) -> Result<NativeToken, String> {
     let mut provider = provider_config(&provider_name)?;
     if provider_name == "google" {
         provider.scope = google_scope(&purpose)?;
@@ -172,6 +174,7 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
     let mut url = Url::parse(provider.authorize).map_err(|_| "Configuration OAuth invalide.".to_string())?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
+        .append_pair("access_type", "offline")
         .append_pair("client_id", &client_id)
         .append_pair("redirect_uri", &redirect)
         .append_pair("scope", provider.scope)
@@ -179,7 +182,7 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
         .append_pair("code_challenge", &pkce_challenge(&verifier))
         .append_pair("code_challenge_method", "S256")
         .append_pair("include_granted_scopes", "true");
-    if purpose == "login" { url.query_pairs_mut().append_pair("prompt", "select_account"); }
+    url.query_pairs_mut().append_pair("prompt", if purpose == "login" { "select_account consent" } else { "consent" });
     if let Some(hint) = login_hint.filter(|hint| !hint.is_empty() && hint.len() <= 255) { url.query_pairs_mut().append_pair("login_hint", &hint); }
     // Fixed HTTPS provider URLs are opened by the OS, never inside the WebView.
     open::that(url.as_str()).map_err(|_| "Impossible d’ouvrir votre navigateur. Vérifiez le navigateur par défaut de Windows.".to_string())?;
@@ -190,7 +193,7 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
         .build().map_err(|_| "Impossible de préparer la connexion sécurisée.".to_string())?;
     let mut form = vec![
         ("grant_type", "authorization_code".to_string()),
-        ("client_id", client_id),
+        ("client_id", client_id.clone()),
         ("code", code),
         ("redirect_uri", redirect),
         ("code_verifier", verifier),
@@ -213,12 +216,20 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
             return Err("L’autorisation d’accès au dossier Notes n’a pas été accordée.".into());
         }
     }
-    Ok(NativeToken { access_token: token.access_token, expires_in: token.expires_in, scope: token.scope })
+    if token.refresh_token.as_ref().is_some_and(|v| v.is_empty() || v.len() > 32768) { return Err("La réponse Google est invalide.".into()); }
+    let scope = token.scope.or_else(|| Some(provider.scope.to_string()));
+    let user = if provider_name == "google" {
+        let user = crate::session::read_google_user(&client, &token.access_token)?;
+        crate::session::save_authorization(&session_path, user.clone(), client_id, token.access_token.clone(), token.expires_in, scope.clone(), token.refresh_token)?;
+        Some(user)
+    } else { None };
+    Ok(NativeToken { access_token: token.access_token, expires_in: token.expires_in, scope, user })
 }
 
 #[tauri::command]
-pub async fn native_authorize(provider: String, client_id: String, client_secret: Option<String>, purpose: Option<String>, login_hint: Option<String>) -> Result<NativeToken, String> {
-    tauri::async_runtime::spawn_blocking(move || authorize(provider, client_id, client_secret, purpose.unwrap_or_else(|| "drive".into()), login_hint))
+pub async fn native_authorize(app: tauri::AppHandle, provider: String, client_id: String, client_secret: Option<String>, purpose: Option<String>, login_hint: Option<String>) -> Result<NativeToken, String> {
+    let path = crate::session::session_path(&app)?;
+    tauri::async_runtime::spawn_blocking(move || authorize(provider, client_id, client_secret, purpose.unwrap_or_else(|| "drive".into()), login_hint, path))
         .await.map_err(|_| "La connexion au cloud a été interrompue.".to_string())?
 }
 
@@ -264,3 +275,6 @@ mod tests {
         assert_eq!(provider_config("onedrive").unwrap().loopback_host, "localhost");
     }
 }
+
+#[cfg(test)]
+pub(crate) fn test_random_id() -> String { random_secret() }
