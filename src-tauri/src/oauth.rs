@@ -183,7 +183,8 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
         .append_pair("code_challenge_method", "S256")
         .append_pair("include_granted_scopes", "true");
     url.query_pairs_mut().append_pair("prompt", if purpose == "login" { "select_account consent" } else { "consent" });
-    if let Some(hint) = login_hint.filter(|hint| !hint.is_empty() && hint.len() <= 255) { url.query_pairs_mut().append_pair("login_hint", &hint); }
+    if let Some(hint) = login_hint.clone().filter(|hint| !hint.is_empty() && hint.len() <= 255) { url.query_pairs_mut().append_pair("login_hint", &hint); }
+    let expected_subject = login_hint.clone();
     // Fixed HTTPS provider URLs are opened by the OS, never inside the WebView.
     open::that(url.as_str()).map_err(|_| "Impossible d’ouvrir votre navigateur. Vérifiez le navigateur par défaut de Windows.".to_string())?;
     let code = wait_for_callback(listener, &state)?;
@@ -220,7 +221,7 @@ fn authorize(provider_name: String, client_id: String, client_secret: Option<Str
     let scope = token.scope.or_else(|| Some(provider.scope.to_string()));
     let user = if provider_name == "google" {
         let user = crate::session::read_google_user(&client, &token.access_token)?;
-        crate::session::save_authorization(&session_path, user.clone(), client_id, token.access_token.clone(), token.expires_in, scope.clone(), token.refresh_token)?;
+        crate::session::save_authorization(&session_path, user.clone(), client_id, token.access_token.clone(), token.expires_in, scope.clone(), token.refresh_token, if purpose == "drive" { expected_subject.as_deref() } else { None })?;
         Some(user)
     } else { None };
     Ok(NativeToken { access_token: token.access_token, expires_in: token.expires_in, scope, user })

@@ -56,8 +56,9 @@ fn credentials(value: &StoredSession) -> Option<NativeToken> {
     if expires_in <= 60 || expires_in > 86400 || value.access_token.is_empty() { return None; }
     Some(NativeToken { access_token: value.access_token.clone(), expires_in, scope: value.scope.clone(), user: Some(value.user.clone()) })
 }
-pub(crate) fn save_authorization(path: &Path, user: GoogleProfile, client_id: String, access_token: String, expires_in: u64, scope: Option<String>, refresh_token: Option<String>) -> Result<(), String> {
+pub(crate) fn save_authorization(path: &Path, user: GoogleProfile, client_id: String, access_token: String, expires_in: u64, scope: Option<String>, refresh_token: Option<String>, expected_subject: Option<&str>) -> Result<(), String> {
     let _guard = SESSION_LOCK.lock().map_err(|_| "La connexion est occupée.".to_string())?;
+    if expected_subject.is_some_and(|subject| subject != user.id) { return Err("Choisissez le même compte Google que pour la connexion à Notes.".into()); }
     let previous = load(path).ok().flatten();
     let refresh_token = refresh_token.or_else(|| previous.filter(|v| v.user.id == user.id && v.client_id == client_id).and_then(|v| v.refresh_token));
     store(path, &StoredSession { version: 1, user, client_id, access_token, expires_at: now() + expires_in, scope, refresh_token })
@@ -149,6 +150,15 @@ mod tests {
         let mut protected = protect(plain).unwrap(); assert!(!protected.windows(plain.len()).any(|v| v == plain));
         assert_eq!(unprotect(&protected).unwrap(), plain);
         let last = protected.len() - 1; protected[last] ^= 1; assert!(unprotect(&protected).is_err());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn wrong_drive_account_cannot_replace_the_remembered_login() {
+        let dir = std::env::temp_dir().join(format!("notes-account-test-{}", crate::oauth::test_random_id())); fs::create_dir_all(&dir).unwrap(); let path = dir.join("session.bin");
+        store(&path, &fixture()).unwrap(); let before = fs::read(&path).unwrap();
+        let other = GoogleProfile { id: "person-b".into(), email: "b@example.com".into(), name: "Other".into() };
+        assert!(save_authorization(&path, other, "client".into(), "new-token".into(), 3600, Some("openid".into()), Some("other-renewal".into()), Some("person-a")).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before); assert_eq!(load(&path).unwrap().unwrap().user.id, "person-a"); fs::remove_dir_all(dir).unwrap();
     }
     #[cfg(windows)]
     #[test]
