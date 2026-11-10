@@ -35,3 +35,9 @@ L’adresse `releases/latest` de GitHub ne sert pas les brouillons ni les prerel
 ## Continuité des installations existantes
 
 La version 0.1.1 conserve l’identifiant interne et le format des coffres. L’installeur réutilise une ancienne installation reconnue, remplace son exécutable et actualise son nom dans Windows. Le répertoire physique historique peut rester identique pour préserver la continuité. Le workflow teste cette transition depuis la première release, avec un marqueur de données conservé et une vérification des raccourcis.
+
+## macOS
+
+Déclenchez le workflow `macOS` avec `gh workflow run macos.yml`. Il teste le Trousseau, compile les deux architectures, vérifie la signature du bundle et fournit l’artifact `notes-macos` avec le DMG, l’archive de mise à jour signée et `latest-macos.json`. Les variables Google et la clé Tauri sont les mêmes que pour Windows.
+
+Après vérification, ajoutez uniquement ces nouveaux fichiers à la release de même version. Ne remplacez pas `latest.json` ni l’installeur Windows. Le tag `mac-v0.3.2` identifie les sources du premier binaire Mac, et ne déclenche pas le workflow Windows. La notarisation future nécessite un certificat Apple Developer ID et sa configuration de distribution ; elle n’est pas activée pour cette compilation.

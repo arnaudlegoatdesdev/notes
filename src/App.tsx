@@ -97,6 +97,7 @@ import AttachmentImage from "./components/AttachmentImage";
 import ImageViewer from "./components/ImageViewer";
 import VaultSetup, { type VaultOptions } from "./components/VaultSetup";
 import GoogleMark from "./components/GoogleMark";
+import PlatformIcon from "./components/PlatformIcon";
 import GoogleDriveIcon from "./components/GoogleDriveIcon";
 import { driveGrant } from "./cloud/google";
 import {
@@ -112,9 +113,9 @@ import {
 import { mergeVault, stampChanges } from "./merge";
 import {
   APP_VERSION,
-  isWindowsBrowser,
-  latestWindowsDownload,
-  type WindowsDownload,
+  desktopPlatform,
+  latestDesktopDownload,
+  type DesktopDownload,
 } from "./windows-install";
 import {
   signInGoogle,
@@ -301,20 +302,26 @@ export default function App() {
     version: string;
     install: () => Promise<void>;
   } | null>(null);
-  const [windowsDownload, setWindowsDownload] =
-    useState<WindowsDownload | null>(null);
+  const [desktopDownload, setDesktopDownload] =
+    useState<DesktopDownload | null>(null);
   const [installOffer, setInstallOffer] = useState(false);
   useEffect(() => {
-    if (!identity || !isWindowsBrowser(navigator, isDesktop)) return;
+    const platform = desktopPlatform(navigator, isDesktop);
+    if (!identity || !platform) return;
     let canceled = false;
-    void latestWindowsDownload()
+    void latestDesktopDownload(platform)
       .then((result) => {
         if (canceled || !result) return;
-        setWindowsDownload(result);
+        setDesktopDownload(result);
         try {
-          setInstallOffer(
-            localStorage.getItem("notes.install.dismissed") !== result.version,
-          );
+          const dismissed =
+            localStorage.getItem(
+              `notes.install.dismissed.${result.platform}`,
+            ) ||
+            (result.platform === "windows"
+              ? localStorage.getItem("notes.install.dismissed")
+              : null);
+          setInstallOffer(dismissed !== result.version);
         } catch {
           setInstallOffer(true);
         }
@@ -326,8 +333,11 @@ export default function App() {
   }, [identity?.id]);
   const dismissInstall = () => {
     setInstallOffer(false);
-    if (windowsDownload)
-      localStorage.setItem("notes.install.dismissed", windowsDownload.version);
+    if (desktopDownload)
+      localStorage.setItem(
+        `notes.install.dismissed.${desktopDownload.platform}`,
+        desktopDownload.version,
+      );
   };
   const updateChecked = useRef(false);
   useEffect(() => {
@@ -963,7 +973,21 @@ export default function App() {
             Continuer avec Google
           </button>
 
-          {!isDesktop && <nav aria-label="Informations sur Notes" style={{display:"flex",justifyContent:"center",gap:18,marginTop:20,fontSize:12}}><a href="./about.html">Présentation</a><a href="./privacy.html">Confidentialité</a></nav>}
+          {!isDesktop && (
+            <nav
+              aria-label="Informations sur Notes"
+              style={{
+                display: "flex",
+                justifyContent: "center",
+                gap: 18,
+                marginTop: 20,
+                fontSize: 12,
+              }}
+            >
+              <a href="./about.html">Présentation</a>
+              <a href="./privacy.html">Confidentialité</a>
+            </nav>
+          )}
           {!cloudConfigured("google") && (
             <p className="access-error">Connexion Google non configurée.</p>
           )}
@@ -1691,22 +1715,32 @@ export default function App() {
         onChange={(e) => upload(e.target.files)}
       />
       {notice && <Toast text={notice} onClose={() => setNotice("")} />}
-      {installOffer && windowsDownload && (
+      {installOffer && desktopDownload && (
         <Modal title="Installer Notes" onClose={dismissInstall}>
           <p className="modal-copy">
-            Gardez vos notes à portée de main sur Windows.
+            {desktopDownload.platform === "macos"
+              ? "Retrouvez Notes dans une fenêtre dédiée sur votre Mac."
+              : "Gardez vos notes à portée de main sur Windows."}
           </p>
+          {desktopDownload.platform === "macos" && (
+            <p className="field-note">
+              Mac Intel et Apple Silicon, macOS 12 ou ultérieur. Version non
+              notarisée par Apple.
+            </p>
+          )}
           <div className="modal-actions">
             <button className="button secondary" onClick={dismissInstall}>
               Plus tard
             </button>
             <a
               className="button primary"
-              href={windowsDownload.url}
+              href={desktopDownload.url}
               onClick={dismissInstall}
             >
-              <Download size={17} />
-              Installer Notes
+              <PlatformIcon platform={desktopDownload.platform} />
+              {desktopDownload.platform === "macos"
+                ? "Installer sur Mac"
+                : "Installer pour Windows"}
             </a>
           </div>
         </Modal>

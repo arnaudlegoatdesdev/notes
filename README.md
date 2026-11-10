@@ -1,10 +1,10 @@
 # Notes
 
-Un espace personnel pour les mémos, les photos et les fichiers, organisé en salons. Site mobile et application Windows partagent la même interface.
+Un espace personnel pour les mémos, les photos et les fichiers, organisé en salons. Le site mobile et les applications Windows et macOS partagent la même interface.
 
 > Projet personnel développé rapidement à la demande de plusieurs personnes, avec une aide importante de l’IA pour le code, l’interface et la documentation. Il est indépendant de ma formation et de tout travail scolaire. Il ne représente pas une évaluation de mes compétences ou de mon apprentissage.
 
-[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/latest)
+[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.3.2/Notes_0.3.2_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.3.2/Notes_0.3.2_universal.dmg)
 
 ## Utilisation
 
@@ -32,7 +32,7 @@ Sur Windows, l’accès Google est renouvelé automatiquement. Dans le navigateu
 
 ## Hébergement et comptes
 
-Aucun serveur de données ni base de comptes n’est géré par l’auteur. Google vérifie l’identité ; l’application appelle directement ses API. Le sujet Google est conservé dans le coffre chiffré pour l’associer au compte. La session est mémorisée jusqu’à une déconnexion explicite. Dans le navigateur, le profil et les jetons d’accès encore valides sont chiffrés dans IndexedDB avec une clé non exportable. Sur Windows, la connexion et le jeton de renouvellement sont protégés par Windows DPAPI.
+Aucun serveur de données ni base de comptes n’est géré par l’auteur. Google vérifie l’identité ; l’application appelle directement ses API. Le sujet Google est conservé dans le coffre chiffré pour l’associer au compte. La session est mémorisée jusqu’à une déconnexion explicite. Dans le navigateur, le profil et les jetons d’accès encore valides sont chiffrés dans IndexedDB avec une clé non exportable. Sur Windows, la connexion et le jeton de renouvellement sont protégés par Windows DPAPI ; sur Mac, ils sont conservés dans le Trousseau macOS.
 
 Le site est statique, construit avec React, TypeScript et Vite. Cloudflare Pages peut le publier depuis ce dépôt : branche `main`, Node 24, commande `npm run build`, sortie `dist`. Le domaine est `notes.flion.fr`. [Configuration](docs/SETUP.md).
 
@@ -56,3 +56,9 @@ npm run tauri -- dev
 Node 24 est utilisé en CI. Pour Windows, installez les [prérequis Tauri](https://v2.tauri.app/start/prerequisites/). Les variables OAuth se configurent à la compilation ; les utilisateurs finaux n’ont pas à créer de projet Google.
 
 [Publication Windows](docs/RELEASES.md) · [Architecture](docs/ARCHITECTURE.md) · [Licence MIT](LICENSE)
+
+## macOS
+
+Le DMG universel contient les architectures Intel et Apple Silicon et nécessite macOS 12 ou ultérieur. Glissez Notes dans Applications. Cette première distribution utilise une signature ad hoc, sans notarisation Apple ; macOS peut demander une autorisation à la première ouverture.
+
+Le workflow macOS est déclenché manuellement et ne compile pas Windows. Les mises à jour Mac utilisent `latest-macos.json`, séparé du manifeste Windows. Le code du premier binaire Mac 0.3.2 correspond au tag `mac-v0.3.2`.

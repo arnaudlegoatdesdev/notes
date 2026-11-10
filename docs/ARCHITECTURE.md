@@ -43,3 +43,9 @@ OAuth utilise le navigateur système, PKCE S256, un état aléatoire et un retou
 Sur le site, l’offre d’installation exige un navigateur Windows de bureau et exclut Tauri ainsi que les appareils mobiles. L’API GitHub fournit la dernière version publiée. Seul l’installeur du dépôt Notes correspondant exactement au tag est accepté ; le bouton télécharge directement cet asset. Les versions plus anciennes que le site ne sont pas proposées. Le refus est mémorisé jusqu’à une nouvelle version.
 
 Les mises à jour intégrées utilisent le manifeste GitHub et une signature Tauri. Cette signature est distincte d’un certificat Windows Authenticode. Les formats, OAuth et la synchronisation n’ont pas reçu d’audit indépendant.
+
+## macOS
+
+Le même frontend est compilé en application Tauri universelle Intel / Apple Silicon. Le code OAuth et le renouvellement Google sont communs à Windows. La persistance remplace DPAPI par un élément de mot de passe générique du Trousseau macOS, propre à Notes. La déconnexion supprime cet élément. Le paquet exige macOS 12 ou ultérieur.
+
+La signature ad hoc permet la validation du paquet ; elle ne vaut pas notarisation Apple. Les mises à jour signées utilisent un manifeste distinct `latest-macos.json`. La version Windows et ses assets publiés restent inchangés.
