@@ -10,3 +10,6 @@ src-tauri/target/
 .DS_Store
 *.log
 *.flion
+*.tsbuildinfo
+artifacts/
+.sites-runtime/

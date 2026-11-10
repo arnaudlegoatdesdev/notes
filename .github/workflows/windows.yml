@@ -38,11 +38,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: '1.90.0'
+      - name: Réutiliser les dépendances et compilations Rust
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: windows-rust-1.90-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}-v1
+          restore-keys: |
+            windows-rust-1.90-
       - run: npm ci
       - run: npm test
       - run: npm run build
       - name: Tester le code natif
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+        run: cargo test --release --manifest-path src-tauri/Cargo.toml --lib
       - name: Préparer les mises à jour signées
         id: updater
         shell: pwsh
@@ -58,7 +69,7 @@ jobs:
               bundle = @{ createUpdaterArtifacts = $true }
               plugins = @{
                 updater = @{
-                  pubkey = $env:FLION_UPDATER_PUBLIC_KEY
+                  pubkey = ($env:FLION_UPDATER_PUBLIC_KEY).Trim()
                   endpoints = @('https://github.com/arnaudlegoatdesdev/flion/releases/latest/download/latest.json')
                   windows = @{ installMode = 'passive' }
                 }

@@ -27,3 +27,9 @@ L’historique de synchronisation peut consommer de l’espace même après la s
 Les adaptateurs utilisent uniquement le dossier d’application Google Drive ou OneDrive. Les jetons d’accès sont éphémères et séparés des données du coffre. Sur Windows, le noyau Rust ouvre une URL d’autorisation prédéfinie, vérifie un état aléatoire, utilise PKCE S256 et écoute uniquement sur l’interface locale pendant au maximum trois minutes. Le serveur local temporaire reçoit le retour OAuth ; ce n’est pas un serveur hébergé par l’auteur.
 
 Cette architecture réduit les données détenues par l’auteur. Elle ne rend pas invisibles les tailles, les dates de transfert et le compte utilisé, et ne constitue pas une garantie de confidentialité absolue.
+
+## Imports et sauvegardes
+
+L’import cloud authentifie les objets et les écrit un par un dans un espace temporaire IndexedDB. Le manifeste ne remplace la copie courante qu’après validation de toutes les pièces jointes et vérification de la révision locale. Un transfert interrompu conserve le coffre précédent. Les fichiers locaux inchangés sont réutilisés. La capacité réelle de stockage du navigateur ou de l’appareil reste une limite et les erreurs disque sont traitées.
+
+L’export regroupé en fichier `.flion` est limité à 512 Mio dans cette version. Cette limite ne concerne pas la synchronisation cloud. Les fichiers d’une sauvegarde sont vérifiés avant l’import ; les téléchargements cloud utilisent un chargeur progressif.

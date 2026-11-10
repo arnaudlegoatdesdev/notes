@@ -14,7 +14,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
-type StoredState = { revision: string; manifest: Uint8Array; fileSizes: Record<string, number> };
+type StoredState = { revision: string; manifest: Uint8Array; fileSizes: Record<string, number>; fileKeys?: Record<string, string> };
 export interface VaultSession {
   readonly data: VaultData;
   save(data: VaultData): Promise<void>;
@@ -39,14 +39,18 @@ function concat(...values: Uint8Array[]): Uint8Array<ArrayBuffer> {
 function startsWith(bytes: Uint8Array, prefix: Uint8Array) {
   return prefix.every((value, index) => value === bytes[index]);
 }
+function storageFailure(error: unknown): unknown {
+  if (error && typeof error === 'object' && 'name' in error && error.name === 'QuotaExceededError') return new Error('Le stockage de cet appareil est plein. Libérez de la place puis réessayez. Le coffre précédent est conservé.');
+  return error;
+}
 function request<T>(req: IDBRequest<T>): Promise<T> {
-  return new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error ?? new Error('Stockage local indisponible.')); });
+  return new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(storageFailure(req.error ?? new Error('Stockage local indisponible.'))); });
 }
 function completion(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error('Échec du stockage local.'));
-    transaction.onabort = () => reject(transaction.error ?? new Error('Écriture locale annulée.'));
+    transaction.onerror = () => reject(storageFailure(transaction.error ?? new Error('Échec du stockage local.')));
+    transaction.onabort = () => reject(storageFailure(transaction.error ?? new Error('Écriture locale annulée.')));
   });
 }
 async function database(): Promise<IDBDatabase> {
@@ -60,16 +64,28 @@ async function readState(): Promise<StoredState | undefined> {
   try { return await request(db.transaction('state').objectStore('state').get('vault')); }
   finally { db.close(); }
 }
+function physicalKey(state: StoredState, id: string): string { return state.fileKeys?.[id] ?? id; }
 async function readStorage(): Promise<{ state?: StoredState; files: Record<string, Uint8Array> }> {
   const db = await database();
   try {
     const tx = db.transaction(['state', 'files']);
-    const stateReq = request<StoredState | undefined>(tx.objectStore('state').get('vault'));
-    const keyReq = request(tx.objectStore('files').getAllKeys());
-    const valuesReq = request<Uint8Array[]>(tx.objectStore('files').getAll());
-    const [state, keys, values] = await Promise.all([stateReq, keyReq, valuesReq]);
+    const done = completion(tx);
+    let state: StoredState | undefined;
+    let failure: unknown;
     const files: Record<string, Uint8Array> = Object.create(null);
-    keys.forEach((key, index) => { files[String(key)] = copy(values[index]); });
+    const req = tx.objectStore('state').get('vault');
+    req.onsuccess = () => {
+      state = req.result;
+      if (!state) return;
+      for (const id of Object.keys(state.fileSizes)) {
+        const get = tx.objectStore('files').get(physicalKey(state, id));
+        get.onsuccess = () => {
+          if (!(get.result instanceof Uint8Array)) { failure = new Error('Une pièce jointe locale est manquante.'); tx.abort(); return; }
+          files[id] = get.result;
+        };
+      }
+    };
+    try { await done; } catch (error) { throw failure ?? error; }
     return { state, files };
   } finally { db.close(); }
 }
@@ -89,7 +105,6 @@ async function replaceStorage(expected: string | undefined, manifest: Uint8Array
       if ((req.result as StoredState | undefined)?.revision !== expected) { mismatch = true; tx.abort(); return; }
       state.put({ revision, manifest: copy(manifest), fileSizes: Object.fromEntries(Object.entries(files).map(([id, bytes]) => [id, bytes.byteLength])) } satisfies StoredState, 'vault');
       const store = tx.objectStore('files');
-      store.clear();
       for (const [id, bytes] of Object.entries(files)) store.put(copy(bytes), id);
     };
     try { await done; } catch (error) { if (mismatch) throw conflict(); throw error; }
@@ -109,15 +124,18 @@ async function updateStorage(expected: string, manifest: Uint8Array, fileSizes: 
     req.onsuccess = () => {
       try {
         guard();
-        if ((req.result as StoredState | undefined)?.revision !== expected) throw conflict();
-        state.put({ revision, manifest: copy(manifest), fileSizes: { ...fileSizes } } satisfies StoredState, 'vault');
+        const current = req.result as StoredState | undefined;
+        if (current?.revision !== expected) throw conflict();
+        const fileKeys = Object.fromEntries(Object.keys(fileSizes).map(id => [id, physicalKey(current, id)]));
         const store = tx.objectStore('files');
         for (const [id, bytes] of Object.entries(changes)) {
-          if (bytes) store.put(copy(bytes), id); else store.delete(id);
+          const objectKey = physicalKey(current, id);
+          if (bytes) store.put(copy(bytes), objectKey); else store.delete(objectKey);
         }
+        state.put({ revision, manifest: copy(manifest), fileSizes: { ...fileSizes }, fileKeys } satisfies StoredState, 'vault');
       } catch (error) { failure = error; tx.abort(); }
     };
-    try { await done; } catch (error) { throw failure ?? error; }
+    try { await done; } catch (error) { throw storageFailure(failure ?? error); }
     return revision;
   } finally { db.close(); }
 }
@@ -125,11 +143,77 @@ async function readOneFile(id: string): Promise<{ state?: StoredState; bytes?: U
   const db = await database();
   try {
     const tx = db.transaction(['state', 'files']);
-    const [state, bytes] = await Promise.all([
-      request<StoredState | undefined>(tx.objectStore('state').get('vault')),
-      request<Uint8Array | undefined>(tx.objectStore('files').get(id)),
-    ]);
+    const done = completion(tx);
+    let state: StoredState | undefined;
+    let bytes: Uint8Array | undefined;
+    const req = tx.objectStore('state').get('vault');
+    req.onsuccess = () => {
+      state = req.result;
+      if (!state || state.fileSizes[id] === undefined) return;
+      const get = tx.objectStore('files').get(physicalKey(state, id));
+      get.onsuccess = () => { bytes = get.result; };
+    };
+    await done;
     return { state, bytes };
+  } finally { db.close(); }
+}
+async function removeObjects(keys: string[]): Promise<void> {
+  if (!keys.length) return;
+  const db = await database();
+  try {
+    const tx = db.transaction('files', 'readwrite'); const done = completion(tx);
+    for (const key of keys) tx.objectStore('files').delete(key);
+    await done;
+  } finally { db.close(); }
+}
+async function cleanUnreachableObjects(expectedRevision: string): Promise<void> {
+  const db = await database();
+  try {
+    const tx = db.transaction(['state', 'files'], 'readwrite'); const done = completion(tx);
+    let failure: unknown;
+    const req = tx.objectStore('state').get('vault');
+    req.onsuccess = () => {
+      const state = req.result as StoredState | undefined;
+      if (state?.revision !== expectedRevision) { failure = conflict(); tx.abort(); return; }
+      const live = new Set(Object.keys(state.fileSizes).map(id => physicalKey(state, id)));
+      const store = tx.objectStore('files');
+      const keys = store.getAllKeys();
+      keys.onsuccess = () => { for (const key of keys.result) if (typeof key === 'string' && !live.has(key)) store.delete(key); };
+    };
+    try { await done; } catch (error) { throw failure ?? error; }
+  } finally { db.close(); }
+}
+async function stageObject(key: string, bytes: Uint8Array): Promise<void> {
+  const db = await database();
+  try {
+    const tx = db.transaction('files', 'readwrite'); const done = completion(tx);
+    tx.objectStore('files').put(bytes, key);
+    await done;
+  } catch (error) { throw storageFailure(error); }
+  finally { db.close(); }
+}
+async function activateStagedVault(expected: string | undefined, manifest: Uint8Array, fileSizes: Record<string, number>, fileKeys: Record<string, string>): Promise<string> {
+  const db = await database();
+  try {
+    const tx = db.transaction(['state', 'files'], 'readwrite'); const done = completion(tx);
+    const revision = crypto.randomUUID(); let failure: unknown;
+    const stateStore = tx.objectStore('state'); const fileStore = tx.objectStore('files');
+    const req = stateStore.get('vault');
+    req.onsuccess = () => {
+      const current = req.result as StoredState | undefined;
+      if (current?.revision !== expected) { failure = conflict(); tx.abort(); return; }
+      const keys = fileStore.getAllKeys();
+      keys.onsuccess = () => {
+        const existing = new Set(keys.result);
+        const wanted = new Set(Object.values(fileKeys));
+        if ([...wanted].some(key => !existing.has(key))) { failure = new Error('Le téléchargement a été interrompu dans un autre onglet. Votre coffre précédent est conservé.'); tx.abort(); return; }
+        stateStore.put({ revision, manifest, fileSizes, fileKeys } satisfies StoredState, 'vault');
+        // Release old live files in the same transaction as the manifest switch.
+        if (current) for (const id of Object.keys(current.fileSizes)) { const key = physicalKey(current, id); if (!wanted.has(key)) fileStore.delete(key); }
+      };
+    };
+    try { await done; } catch (error) { throw storageFailure(failure ?? error); }
+    return revision;
   } finally { db.close(); }
 }
 function ensureReferenceSizes(data: VaultData, fileSizes: Record<string, number>) {
@@ -151,7 +235,7 @@ function attachment(value: unknown): value is Attachment {
 }
 function validateData(value: unknown): asserts value is VaultData {
   if (!isRecord(value) || value.version !== 1 || !uuid(value.id) || !timestamp(value.createdAt)) invalid();
-  if (!Array.isArray(value.channels) || value.channels.length > 10_000 || !Array.isArray(value.messages) || value.messages.length > 100_000 || !isRecord(value.preferences)) invalid();
+  if (!Array.isArray(value.channels) || (value.channels.length < 1 || value.channels.length > 10_000) || !Array.isArray(value.messages) || value.messages.length > 100_000 || !isRecord(value.preferences)) invalid();
   const preferences = value.preferences;
   if (!['slate', 'light', 'forest', 'sand', 'plum'].includes(String(preferences.theme)) || !['system', 'inter', 'serif', 'mono'].includes(String(preferences.font)) || !number(preferences.fontSize, 32) || Number(preferences.fontSize) < 12 || !number(preferences.limitBytes) || !preferences.limitBytes) invalid();
   const channelIds = new Set<string>();
@@ -257,10 +341,66 @@ export async function unlockVault(passphrase: string): Promise<VaultSession> {
     for (const id of orphanIds) { delete fileSizes[id]; changes[id] = undefined; }
     revision = await updateStorage(state.revision, state.manifest, fileSizes, changes, () => undefined);
   }
+  await cleanUnreachableObjects(revision);
   return session(result.data, result.key, result.salt, revision);
 }
-export async function importVault(passphrase: string, bundle: EncryptedBundle, expectedRevision?: string): Promise<VaultSession> {
-  // Clone caller-owned bytes before the first await.
+/**
+ * Load, authenticate and stage one attachment at a time. The existing vault stays
+ * live until a final atomic manifest switch. Aggregate size is limited by the
+ * user's vault limit and device storage, not by an in-memory bundle ceiling.
+ */
+export async function importVaultStream(passphrase: string, inputManifest: Uint8Array, load: (attachment: Attachment) => Promise<Uint8Array>, expectedRevision?: string | null): Promise<VaultSession> {
+  return stageVault(passphrase, inputManifest, load, expectedRevision, true);
+}
+async function stageVault(passphrase: string, inputManifest: Uint8Array, load: (attachment: Attachment) => Promise<Uint8Array>, expectedRevision: string | null | undefined, reuseExisting: boolean, validateBundle?: (data: VaultData) => void): Promise<VaultSession> {
+  parseManifest(inputManifest);
+  const manifest = copy(inputManifest);
+  const current = await readState();
+  if (expectedRevision !== undefined && (current?.revision ?? null) !== expectedRevision) throw conflict();
+  const { key, salt, data } = await decryptManifest(manifest, passphrase);
+  validateBundle?.(data);
+  const items = references(data);
+  const fileSizes = Object.fromEntries([...items].map(([id, item]) => [id, item.storedSize]));
+  quotaSizes(data, manifest, fileSizes);
+  const namespace = `stage:${crypto.randomUUID()}:`;
+  const staged: string[] = [];
+  const fileKeys: Record<string, string> = Object.create(null);
+  try {
+    for (const [id, item] of items) {
+      // Immutable UUID blobs already on this device can be reused after their
+      // ciphertext authenticates with the incoming vault's key.
+      if (reuseExisting && current?.fileSizes[id] === item.storedSize) {
+        const local = await readOneFile(id);
+        if (local.state?.revision !== current.revision) throw conflict();
+        if (local.bytes?.byteLength === item.storedSize) {
+          try {
+            const plaintext = await decryptFile(local.bytes, id, key);
+            if (plaintext.byteLength === item.size) { fileKeys[id] = physicalKey(current, id); continue; }
+          } catch { /* Another vault may contain this UUID; use the authenticated download. */ }
+        }
+      }
+      const loaded = await load(structuredClone(item));
+      if (!(loaded instanceof Uint8Array) || loaded.byteLength !== item.storedSize) throw new Error('Une pièce jointe cloud est manquante ou endommagée.');
+      const bytes = copy(loaded);
+      const plaintext = await decryptFile(bytes, id, key);
+      if (plaintext.byteLength !== item.size) invalid();
+      const objectKey = namespace + id;
+      staged.push(objectKey);
+      await stageObject(objectKey, bytes);
+      fileKeys[id] = objectKey;
+    }
+    const revision = await activateStagedVault(current?.revision, manifest, fileSizes, fileKeys);
+    return session(data, key, salt, revision);
+  } catch (error) {
+    // Cleanup is best effort after disk or tab failures. Unlock also sweeps
+    // unreachable objects without ever deleting a live file.
+    await removeObjects(staged).catch(() => undefined);
+    throw storageFailure(error);
+  }
+}
+export async function importVault(passphrase: string, bundle: EncryptedBundle, expectedRevision?: string | null): Promise<VaultSession> {
+  // Bundle imports keep the original snapshot contract. Cloud imports use the
+  // streaming API directly and never allocate all attachments at once.
   if (!bundle || !(bundle.manifest instanceof Uint8Array) || !isRecord(bundle.files) || Object.keys(bundle.files).length > MAX_FILE_COUNT) invalid();
   parseManifest(bundle.manifest);
   const manifest = copy(bundle.manifest);
@@ -269,19 +409,12 @@ export async function importVault(passphrase: string, bundle: EncryptedBundle, e
     if (!uuid(id) || !(bytes instanceof Uint8Array) || bytes.byteLength < 36 || bytes.byteLength > MAX_FILE_BYTES + 36) invalid();
     files[id] = copy(bytes);
   }
-  // Snapshot existing revision before the expensive KDF so concurrent changes are never overwritten.
-  const current = await readState();
-  if (expectedRevision !== undefined && current?.revision !== expectedRevision) throw conflict();
-  const { key, salt, data } = await decryptManifest(manifest, passphrase);
-  ensureFileReferences(data, files);
-  if (references(data).size !== Object.keys(files).length) invalid();
-  quota(data, manifest, files);
-  for (const [id, item] of references(data)) {
-    const plaintext = await decryptFile(files[id], id, key);
-    if (plaintext.byteLength !== item.size) invalid();
-  }
-  const revision = await replaceStorage(current?.revision, manifest, files);
-  return session(data, key, salt, revision);
+  return stageVault(passphrase, manifest, async item => files[item.id], expectedRevision, false, data => {
+    // Validate the complete bundle shape before any staging writes, and always
+    // authenticate supplied bytes even if this device has a valid older copy.
+    ensureFileReferences(data, files);
+    if (references(data).size !== Object.keys(files).length) invalid();
+  });
 }
 export async function clearLocalVault(): Promise<void> {
   const db = await database();

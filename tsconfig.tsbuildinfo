@@ -1,1 +1,0 @@
-{"root":["./src/app.tsx","./src/archive.ts","./src/desktop.ts","./src/main.tsx","./src/seed.ts","./src/sync.ts","./src/cloud/google.ts","./src/cloud/http.ts","./src/cloud/index.ts","./src/cloud/onedrive.ts","./src/cloud/types.ts","./src/core/types.ts","./src/core/vault.ts","./tests/cloud.test.ts","./tests/vault.test.ts","./vite.config.ts"],"version":"5.9.3"}

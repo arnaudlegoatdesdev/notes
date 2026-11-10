@@ -56,11 +56,15 @@ export class GoogleConnection extends TokenConnection implements CloudConnection
     if (!this.account) throw new CloudError('Google n’a pas renvoyé l’identité de ce compte.', 'provider');
   }
   async list(): Promise<CloudFile[]> {
+    return this.listFiles();
+  }
+  private async listFiles(name?: string): Promise<CloudFile[]> {
     const files: CloudFile[] = [];
     const seen = new Set<string>();
     let pageToken: string | undefined;
     do {
-      const params = new URLSearchParams({ spaces: 'appDataFolder', q: "trashed = false and mimeType != 'application/vnd.google-apps.folder'", fields: 'nextPageToken,files(id,name,size)', pageSize: '1000' });
+      const query = "trashed = false and mimeType != 'application/vnd.google-apps.folder'" + (name ? ` and name = '${name}'` : '');
+      const params = new URLSearchParams({ spaces: 'appDataFolder', q: query, fields: 'nextPageToken,files(id,name,size)', pageSize: '1000' });
       if (pageToken) params.set('pageToken', pageToken);
       const page = await (await this.request(`${DRIVE}/files?${params}`)).json();
       for (const file of page.files ?? []) files.push({ id: String(file.id), name: String(file.name), size: Number(file.size ?? 0) });
@@ -81,7 +85,7 @@ export class GoogleConnection extends TokenConnection implements CloudConnection
     return operation;
   }
   private async createUnique(name: string, bytes: Uint8Array): Promise<CloudFile> {
-    if ((await this.list()).some(file => file.name === name)) throw new CloudError('Ce fichier existe déjà dans votre cloud. Aucune donnée n’a été remplacée.', 'collision');
+    if ((await this.listFiles(name)).length) throw new CloudError('Ce fichier existe déjà dans votre cloud. Aucune donnée n’a été remplacée.', 'collision');
     // Resumable upload avoids building a second multipart copy of large encrypted files.
     const session = await this.request(`https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,size`, {
       method: 'POST',
@@ -93,7 +97,7 @@ export class GoogleConnection extends TokenConnection implements CloudConnection
     const response = await this.request(location, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: bytesBody(bytes) });
     const file = await response.json();
     // Drive permits duplicate names. UUID object names avoid races; detect one if it occurs.
-    if ((await this.list()).filter(item => item.name === name).length > 1) throw new CloudError('Deux appareils ont créé un fichier portant le même nom. Relancez la synchronisation.', 'collision');
+    if ((await this.listFiles(name)).length > 1) throw new CloudError('Deux appareils ont créé un fichier portant le même nom. Relancez la synchronisation.', 'collision');
     return { id: String(file.id), name: String(file.name), size: Number(file.size ?? bytes.byteLength) };
   }
   async quota(): Promise<CloudQuota> {

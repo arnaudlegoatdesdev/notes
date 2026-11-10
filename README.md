@@ -19,7 +19,7 @@ Le nom proposé est **Flion** et le sous-domaine prévu est **notes.flion.fr**. 
 
 Cette version est une base fonctionnelle préliminaire, sans audit de sécurité indépendant. Les intégrations cloud sont implémentées, mais doivent être vérifiées avec les inscriptions OAuth du mainteneur avant une ouverture au public. Les connexions désactivées faute de configuration ne simulent aucun compte ni aucune synchronisation.
 
-Le dépôt contient une compilation Windows par GitHub Actions. L’installeur produit sans certificat Windows n’est pas signé avec Authenticode. Le mécanisme de mise à jour intégrée reste désactivé tant qu’une vraie paire de clés de signature n’est pas configurée. La signature des mises à jour Tauri est distincte de la signature Windows.
+Le dépôt contient une compilation Windows par GitHub Actions. Les compilations officielles sont configurées pour des mises à jour signées : Flion vérifie la disponibilité d’une version au démarrage et propose son installation. Une compilation locale reste sans mise à jour intégrée tant qu’une vraie paire de clés n’est pas configurée. L’installeur n’est pas signé avec Authenticode ; la signature des mises à jour Tauri est distincte de la signature Windows.
 
 ## Utilisation
 
@@ -27,7 +27,7 @@ Créez un coffre et conservez son mot de passe, puis organisez vos salons. Pour 
 
 Le mot de passe du coffre n’est pas celui de Google ou de Microsoft. Il n’existe pas de réinitialisation permettant de récupérer le contenu chiffré en cas de perte. Conservez également une sauvegarde exportée avant toute opération de remplacement du coffre.
 
-Les pièces jointes sont limitées à **25 Mio par fichier** dans cette première version. La consommation du cloud peut inclure d’anciennes versions de synchronisation. Supprimer un message dans l’interface ne garantit donc pas l’effacement immédiat de toutes ses copies historiques. Voir [l’architecture](docs/ARCHITECTURE.md).
+L’export en un fichier est limité à **512 Mio** ; cette limite ne s’applique pas à la synchronisation cloud progressive. Les pièces jointes sont limitées à **25 Mio par fichier** dans cette première version. La consommation du cloud peut inclure d’anciennes versions de synchronisation. Supprimer un message dans l’interface ne garantit donc pas l’effacement immédiat de toutes ses copies historiques. Voir [l’architecture](docs/ARCHITECTURE.md).
 
 ## Stockage et confidentialité
 

@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it } from 'vitest';
-import { clearLocalVault, createVault, hasVault, importVault, inspectManifest, unlockVault } from '../src/core/vault';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearLocalVault, createVault, hasVault, importVault, importVaultStream, inspectManifest, unlockVault } from '../src/core/vault';
 import type { VaultData } from '../src/core/types';
 
 const password = 'un coffre vraiment secret';
@@ -14,6 +14,24 @@ async function rawBytes(): Promise<string> {
   const values = await Promise.all(['state', 'files'].map(name => new Promise<unknown[]>((resolve, reject) => { const request = tx.objectStore(name).getAll(); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); })));
   db.close();
   return JSON.stringify(values);
+}
+async function storedFileKeys(): Promise<string[]> {
+  const req = indexedDB.open('flion-vault-v1');
+  const db = await new Promise<IDBDatabase>((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+  const keys = await new Promise<IDBValidKey[]>((resolve, reject) => { const request = db.transaction('files').objectStore('files').getAllKeys(); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+  db.close();
+  return keys.map(String);
+}
+async function twoFileBundle() {
+  const source = await createVault(password, seed());
+  const first = await source.addFile(new File(['premier fichier'], 'premier.txt', { type: 'text/plain' }));
+  const second = await source.addFile(new File(['second fichier'], 'second.txt', { type: 'text/plain' }));
+  const next = source.data;
+  next.messages.push({ id: crypto.randomUUID(), channelId: next.channels[0].id, text: 'Deux fichiers', createdAt: new Date().toISOString(), attachments: [first, second], pinned: false });
+  await source.save(next);
+  const bundle = await source.exportBundle(); source.lock();
+  await clearLocalVault();
+  return { bundle, first, second, data: next };
 }
 beforeEach(async () => { await clearLocalVault(); });
 
@@ -136,6 +154,112 @@ describe('coffre chiffré', () => {
     await session.save(next);
     await expect(importVault(password, downloaded, lease)).rejects.toThrow('autre onglet');
     expect((await unlockVault(password)).data).toEqual(next);
+  });
+
+  it('protège une importation qui avait commencé sur un appareil sans coffre', async () => {
+    const original = await createVault(password, seed());
+    const downloaded = await original.exportBundle();
+    await clearLocalVault();
+    const concurrent = await createVault(password, seed());
+    await expect(importVault(password, downloaded, null)).rejects.toThrow('autre onglet');
+    expect((await unlockVault(password)).data.id).toBe(concurrent.data.id);
+    await clearLocalVault();
+    expect((await importVault(password, downloaded, null)).data.id).toBe(original.data.id);
+  });
+
+  it('conserve le coffre original et nettoie les étapes si un téléchargement échoue à mi-chemin', async () => {
+    const { bundle, second } = await twoFileBundle();
+    const original = await createVault(password, seed());
+    const originalData = original.data;
+    const originalManifest = await original.exportManifest();
+    const lease = await original.storageRevision();
+    let calls = 0;
+    await expect(importVaultStream(password, bundle.manifest, async item => {
+      calls += 1;
+      expect(await original.exportManifest()).toEqual(originalManifest);
+      if (item.id === second.id) {
+        expect((await storedFileKeys()).some(key => key.startsWith('stage:'))).toBe(true);
+        throw new Error('Réseau interrompu');
+      }
+      return bundle.files[item.id];
+    }, lease)).rejects.toThrow('Réseau interrompu');
+    expect(calls).toBe(2);
+    expect(await storedFileKeys()).toEqual([]);
+    expect(original.data).toEqual(originalData);
+    expect((await unlockVault(password)).data).toEqual(originalData);
+  });
+
+  it('importe séquentiellement puis réutilise les objets authentifiés et maintient leurs pointeurs', async () => {
+    const { bundle, first, data } = await twoFileBundle();
+    let loads = 0;
+    const imported = await importVaultStream(password, bundle.manifest, async item => {
+      loads += 1;
+      if (loads === 2) expect(await storedFileKeys()).toHaveLength(1);
+      return bundle.files[item.id];
+    }, null);
+    expect(loads).toBe(2);
+    expect(imported.data).toEqual(data);
+    expect(await (await imported.readFile(first)).text()).toBe('premier fichier');
+    const beforeKeys = await storedFileKeys();
+    const refreshed = await importVaultStream(password, bundle.manifest, async () => { throw new Error('Aucun téléchargement attendu'); }, await imported.storageRevision());
+    expect(await storedFileKeys()).toEqual(beforeKeys);
+    expect(await refreshed.exportBundle()).toEqual(bundle);
+    const extra = await refreshed.addFile(new File(['après import'], 'nouveau.txt'));
+    const next = refreshed.data;
+    next.messages[0].attachments = [extra];
+    await refreshed.save(next);
+    for (const attachment of data.messages[0].attachments) await refreshed.removeFile(attachment.id);
+    expect(await storedFileKeys()).toEqual([extra.id]);
+    expect(await (await refreshed.readFile(extra)).text()).toBe('après import');
+    expect((await unlockVault(password)).data).toEqual(next);
+  });
+
+  it('refuse la bascule atomique si la copie locale change pendant les transferts', async () => {
+    const { bundle } = await twoFileBundle();
+    const original = await createVault(password, seed());
+    const next = original.data;
+    next.messages.push({ id: crypto.randomUUID(), channelId: next.channels[0].id, text: 'À conserver', createdAt: new Date().toISOString(), attachments: [], pinned: false });
+    const lease = await original.storageRevision();
+    let changed = false;
+    await expect(importVaultStream(password, bundle.manifest, async item => {
+      if (!changed) { changed = true; await original.save(next); }
+      return bundle.files[item.id];
+    }, lease)).rejects.toThrow('autre onglet');
+    expect((await unlockVault(password)).data).toEqual(next);
+    expect(await storedFileKeys()).toEqual([]);
+  });
+
+  it('nettoie les étapes laissées par un arrêt sans toucher les fichiers actifs', async () => {
+    const { bundle, first } = await twoFileBundle();
+    const imported = await importVaultStream(password, bundle.manifest, async item => bundle.files[item.id], null);
+    const liveKeys = await storedFileKeys();
+    const open = indexedDB.open('flion-vault-v1');
+    const db = await new Promise<IDBDatabase>(resolve => { open.onsuccess = () => resolve(open.result); });
+    const tx = db.transaction('files', 'readwrite');
+    const done = new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
+    tx.objectStore('files').put(new Uint8Array([1, 2, 3]), 'stage:interrupted:orphan');
+    await done; db.close();
+    imported.lock();
+    const reopened = await unlockVault(password);
+    expect(await storedFileKeys()).toEqual(liveKeys);
+    expect(await (await reopened.readFile(first)).text()).toBe('premier fichier');
+  });
+
+  it('explique une saturation du disque et garde le coffre précédent', async () => {
+    const { bundle } = await twoFileBundle();
+    const original = await createVault(password, seed());
+    const initial = original.data;
+    const put = IDBObjectStore.prototype.put;
+    let staged = 0;
+    const mock = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value: unknown, key?: IDBValidKey) {
+      if (typeof key === 'string' && key.startsWith('stage:') && ++staged === 2) throw new DOMException('Device full', 'QuotaExceededError');
+      return put.call(this, value, key);
+    });
+    try {
+      await expect(importVaultStream(password, bundle.manifest, async item => bundle.files[item.id], await original.storageRevision())).rejects.toThrow('stockage de cet appareil est plein');
+    } finally { mock.mockRestore(); }
+    expect((await unlockVault(password)).data).toEqual(initial);
+    expect(await storedFileKeys()).toEqual([]);
   });
 
   it('annule une opération de chiffrement quand le coffre est verrouillé', async () => {
