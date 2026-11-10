@@ -7,6 +7,7 @@ const FILE_MAGIC = new TextEncoder().encode('FLIONF01');
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 const ITERATIONS = 600_000;
+export const MIN_PASSPHRASE_LENGTH = 8;
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const MAX_FILE_COUNT = 10_000;
@@ -271,7 +272,7 @@ function quota(data: VaultData, manifest: Uint8Array, files: Record<string, Uint
   if (total > data.preferences.limitBytes) throw new Error('La limite de stockage du coffre est atteinte. Augmentez-la dans les paramètres ou supprimez des fichiers.');
 }
 function validatePassphrase(passphrase: string) {
-  if (typeof passphrase !== 'string' || passphrase.length < 12 || passphrase.length > 1024) throw new Error('Utilisez un mot de passe de 12 à 1 024 caractères.');
+  if (typeof passphrase !== 'string' || passphrase.length < MIN_PASSPHRASE_LENGTH || passphrase.length > 1024) throw new Error(`Utilisez un mot de passe de ${MIN_PASSPHRASE_LENGTH} à 1 024 caractères.`);
 }
 async function derive(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
   // Parameters are fixed by the format, never accepted from an imported envelope.

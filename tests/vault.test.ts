@@ -277,3 +277,20 @@ describe('coffre chiffré', () => {
     expect(Object.keys((await (await unlockVault(password)).exportBundle()).files)).toHaveLength(0);
   });
 });
+
+
+describe('minimum password length', () => {
+  it('accepts exactly8 characters for create, unlock and encrypted backup import, and rejects7', async () => {
+    await expect(createVault('1234567', seed())).rejects.toThrow('8 à');
+    const session = await createVault('12345678', seed());
+    const expected = session.data;
+    const bundle = await session.exportBundle();
+    session.lock();
+    const reopened = await unlockVault('12345678');
+    expect(reopened.data).toEqual(expected);
+    reopened.lock();
+    const imported = await importVault('12345678', bundle);
+    expect(imported.data).toEqual(expected);
+    await expect(unlockVault('1234567')).rejects.toThrow('8 à');
+  });
+});

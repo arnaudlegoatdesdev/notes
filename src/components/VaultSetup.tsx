@@ -1,3 +1,4 @@
+import { MIN_PASSPHRASE_LENGTH } from "../core/vault";
 import { useState, type FormEvent } from "react";
 import {
   ArrowLeft,
@@ -248,7 +249,7 @@ export default function VaultSetup({
               type="password"
               autoComplete={open ? "current-password" : "new-password"}
               required
-              minLength={12}
+              minLength={MIN_PASSPHRASE_LENGTH}
               maxLength={512}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -262,15 +263,15 @@ export default function VaultSetup({
                   type="password"
                   autoComplete="new-password"
                   required
-                  minLength={12}
+                  minLength={MIN_PASSPHRASE_LENGTH}
                   value={repeat}
                   onChange={(e) => setRepeat(e.target.value)}
                   disabled={waiting}
                 />
                 <p className="field-note">
                   <LockKeyhole size={12} />
-                  12 caractères minimum. Ce mot de passe chiffre vos notes et ne
-                  peut pas être réinitialisé.
+                  {MIN_PASSPHRASE_LENGTH} caractères minimum. Ce mot de passe
+                  chiffre vos notes et ne peut pas être réinitialisé.
                 </p>
               </>
             )}

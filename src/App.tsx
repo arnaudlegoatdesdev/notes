@@ -70,6 +70,7 @@ import {
   clearLocalVault,
   type VaultSession,
   inspectManifest,
+  MIN_PASSPHRASE_LENGTH,
 } from "./core/vault";
 import {
   CloudError,
@@ -777,7 +778,7 @@ export default function App() {
               name="password"
               type="password"
               autoComplete="current-password"
-              minLength={12}
+              minLength={MIN_PASSPHRASE_LENGTH}
               required
               autoFocus
             />
@@ -2088,7 +2089,7 @@ function SettingsPanel({
                 <Brand />
                 <div>
                   <h3>Notes</h3>
-                  <span className="muted">Version 0.2.0</span>
+                  <span className="muted">Version 0.2.1</span>
                 </div>
               </div>
               <p>

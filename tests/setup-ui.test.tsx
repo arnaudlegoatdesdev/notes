@@ -35,11 +35,19 @@ describe("storage choice after Google sign-in", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Continuer en local" }));
     await screen.findByLabelText("Mot de passe du coffre");
+    expect(
+      screen.getByLabelText("Mot de passe du coffre").getAttribute("minlength"),
+    ).toBe("8");
+    expect(
+      screen
+        .getByLabelText("Confirmer le mot de passe")
+        .getAttribute("minlength"),
+    ).toBe("8");
     fireEvent.change(screen.getByLabelText("Mot de passe du coffre"), {
-      target: { value: "local-test-password" },
+      target: { value: "12345678" },
     });
     fireEvent.change(screen.getByLabelText("Confirmer le mot de passe"), {
-      target: { value: "local-test-password" },
+      target: { value: "12345678" },
     });
     fireEvent.submit(
       screen.getByRole("button", { name: "Commencer" }).closest("form")!,
@@ -65,10 +73,10 @@ describe("storage choice after Google sign-in", () => {
     expect(screen.getByText("112 Go disponibles sur Drive.")).toBeTruthy();
     fireEvent.change(limit, { target: { value: "113" } });
     fireEvent.change(screen.getByLabelText("Mot de passe du coffre"), {
-      target: { value: "local-test-password" },
+      target: { value: "12345678" },
     });
     fireEvent.change(screen.getByLabelText("Confirmer le mot de passe"), {
-      target: { value: "local-test-password" },
+      target: { value: "12345678" },
     });
     fireEvent.submit(
       screen.getByRole("button", { name: "Commencer" }).closest("form")!,
