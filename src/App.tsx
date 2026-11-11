@@ -54,7 +54,9 @@ import {
 } from "lucide-react";
 import type {
   Attachment,
+  LinkPreview,
   Channel,
+  Space,
   IconName,
   Message,
   Preferences,
@@ -93,6 +95,14 @@ import { selectSyncAccount } from "./sync-state";
 import { packSession, unpackBundle } from "./archive";
 import { createData } from "./seed";
 import { isDesktop, checkForUpdate } from "./desktop";
+import { handleNativeLinks } from "./external-links";
+import MessageLinks from "./components/MessageLinks";
+import { clearLinkPreviewCache, messageLinkParts, previewUrls } from "./link-previews";
+import AutoGrowTextarea from "./components/AutoGrowTextarea";
+import { continuesMessageGroup } from "./message-layout";
+import SortableChannels from "./components/SortableChannels";
+import TextAttachment from "./components/TextAttachment";
+import { textPreviewKind } from "./text-preview";
 import AttachmentImage from "./components/AttachmentImage";
 import ImageViewer from "./components/ImageViewer";
 import VaultSetup, { type VaultOptions } from "./components/VaultSetup";
@@ -110,6 +120,8 @@ import {
   saveAccess,
   storageChoice,
 } from "./access";
+import { prepareSpaceImage } from "./space-images";
+import { spacesOf, spaceOfChannel, channelsInSpace } from "./spaces";
 import { mergeVault, stampChanges } from "./merge";
 import {
   APP_VERSION,
@@ -155,6 +167,7 @@ const day = (at: string) => {
         });
 };
 const themes: { id: Theme; name: string; color: string; bg: string }[] = [
+  { id: "onyx", name: "Onyx", color: "#b7c6aa", bg: "#000000" },
   { id: "slate", name: "Ardoise", color: "#b5c5a7", bg: "#202227" },
   { id: "light", name: "Clair", color: "#526849", bg: "#f7f7f4" },
   { id: "forest", name: "Forêt", color: "#b2caa3", bg: "#17241f" },
@@ -247,16 +260,11 @@ function Modal({
 function Text({ text }: { text: string }) {
   return (
     <>
-      {text.split(/(https?:\/\/[^\s]+)/g).map((part, i) =>
-        /^https?:\/\//.test(part) ? (
-          <a key={i} href={part} target="_blank" rel="noreferrer noopener">
-            {part}
-            <ExternalLink size={12} />
-          </a>
-        ) : (
-          <span key={i}>{part}</span>
-        ),
-      )}
+      {messageLinkParts(text).map((part, i) => part.url ? (
+        <a key={i} href={part.url} target="_blank" rel="noreferrer noopener">
+          {part.text}<ExternalLink size={12} />
+        </a>
+      ) : <span key={i}>{part.text}</span>)}
     </>
   );
 }
@@ -271,11 +279,23 @@ export default function App() {
   const syncDone = useRef<Promise<void> | null>(null);
   const [identity, setIdentity] = useState<GoogleUser | null>(null);
   const [active, setActive] = useState("");
+  const [activeSpace, setActiveSpace] = useState("");
+  const [channelDragging, setChannelDragging] = useState(false);
+  const [spaceEdit, setSpaceEdit] = useState<Space | null>(null);
   const [view, setView] = useState<"messages" | "files" | "pins">("messages");
   const [drawer, setDrawer] = useState(false),
     [query, setQuery] = useState(""),
     [draft, setDraft] = useState("");
   const [queued, setQueued] = useState<Attachment[]>([]);
+  const composers = useRef(new Map<string, { text: string; files: Attachment[] }>());
+  const previewQueue = useRef(new Map<string, Map<string, LinkPreview>>());
+  const [previewRevision, setPreviewRevision] = useState(0);
+  const queuePreview = useCallback((id: string, preview: LinkPreview) => {
+    const values = previewQueue.current.get(id) || new Map<string, LinkPreview>();
+    values.set(preview.url, preview);
+    previewQueue.current.set(id, values);
+    setPreviewRevision((n) => n + 1);
+  }, []);
   const [used, setUsed] = useState(0),
     [cloudBytes, setCloudBytes] = useState(0),
     [quota, setQuota] = useState<CloudQuota | null>(null);
@@ -286,9 +306,10 @@ export default function App() {
   const [syncError, setSyncError] = useState(""),
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState("");
+  useEffect(() => handleNativeLinks(setNotice), []);
   const [needsReconnect, setNeedsReconnect] = useState(false);
   const [modal, setModal] = useState<
-    "onboarding" | "settings" | "channel" | "connect" | "import" | null
+    "onboarding" | "settings" | "channel" | "spaces" | "space" | "connect" | "import" | null
   >(null);
   const [channelEdit, setChannelEdit] = useState<Channel | null>(null),
     [confirm, setConfirm] = useState<{
@@ -355,11 +376,14 @@ export default function App() {
     searchInput = useRef<HTMLInputElement>(null),
     input = useRef<HTMLInputElement>(null);
   const syncBlock = useRef(false);
-  syncBlock.current = !!(modal || confirm || editing || draft || queued.length);
+  syncBlock.current = !!(channelDragging || modal || confirm || editing || draft || queued.length || [...composers.current.values()].some((c) => c.files.length));
   const syncLock = useRef(false);
   const busyRef = useRef(false);
-  const channel =
-    data.channels.find((c) => c.id === active) || data.channels[0];
+  const spaces = spacesOf(data);
+  const space = spaces.find((s) => s.id === activeSpace) || spaces[0];
+  const spaceChannels = channelsInSpace(data, space.id);
+  const spaceChannelIds = new Set(spaceChannels.map((c) => c.id));
+  const channel = spaceChannels.find((c) => c.id === active) || spaceChannels[0];
   const ChannelIcon = icons[channel?.icon || "hash"];
   const percent = Math.min(
     100,
@@ -377,12 +401,19 @@ export default function App() {
       throw new Error("Connectez-vous avec Google.");
     }
     assertVaultOwner(s.data, user.id);
+    // Older clients must stop syncing before they can overwrite spaces or ordering.
+    if (s.data.version === 1) {
+      await s.save({...s.data, version: 2});
+      markDirty();
+    }
     if (session.current && session.current !== s) session.current.lock();
     session.current = s;
+    composers.current.clear();
     if (record) access.current = record;
     setData(s.data);
     setUsed(await s.usedBytes());
     setMode("vault");
+    setActiveSpace(spacesOf(s.data)[0].id);
     setActive(s.data.channels[0]?.id || "");
     setQueued([]);
     setDraft("");
@@ -434,9 +465,10 @@ export default function App() {
   }, []);
   useEffect(() => {
     setActive((a) =>
-      data.channels.some((c) => c.id === a) ? a : data.channels[0]?.id || "",
+      spaceChannels.some((c) => c.id === a) ? a : spaceChannels[0]?.id || "",
     );
-  }, [data.channels]);
+    setActiveSpace(space.id);
+  }, [data.channels, data.spaces, space.id]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
@@ -514,6 +546,29 @@ export default function App() {
     setUsed(await session.current.usedBytes());
     setSyncStatus(connection ? "pending" : "local");
   };
+  useEffect(() => {
+    if (mode !== "vault" || !previewQueue.current.size || busy || syncBlock.current || syncLock.current) return;
+    const timer = setTimeout(() => void run(async () => {
+      const current = session.current?.data;
+      if (!current) return;
+      const updates = new Map(previewQueue.current);
+      previewQueue.current.clear();
+      let changed = false;
+      const messages = current.messages.map((message) => {
+        const pending = updates.get(message.id);
+        if (!pending) return message;
+        const allowed = previewUrls(message.text);
+        const values = new Map(message.linkPreviews?.map((p) => [p.url, p]));
+        for (const [url, value] of pending) if (allowed.includes(url)) values.set(url, value);
+        const linkPreviews = allowed.flatMap((url) => values.has(url) ? [values.get(url)!] : []);
+        if (JSON.stringify(linkPreviews) === JSON.stringify(message.linkPreviews || [])) return message;
+        changed = true;
+        return {...message, linkPreviews};
+      });
+      if (changed) await commit({...current, messages});
+    }), 600);
+    return () => clearTimeout(timer);
+  }, [previewRevision, mode, busy, data, modal, confirm, editing, draft, queued, channelDragging, syncStatus]);
   const synchronize = useCallback(
     async (conn = connection) => {
       if (
@@ -576,6 +631,7 @@ export default function App() {
     connection,
     syncStatus,
     busy,
+    channelDragging,
     data,
     synchronize,
     modal,
@@ -609,6 +665,9 @@ export default function App() {
     }
     session.current?.lock();
     session.current = null;
+    composers.current.clear();
+    previewQueue.current.clear();
+    clearLinkPreviewCache();
     access.current = null;
     void connection?.disconnect();
     setConnection(null);
@@ -626,12 +685,32 @@ export default function App() {
     setSyncStatus("local");
     setMode("login");
   };
+  const switchComposer = (id: string) => {
+    if (channel) composers.current.set(channel.id, { text: draft, files: queued });
+    const saved = composers.current.get(id);
+    composers.current.delete(id);
+    setDraft(saved?.text || "");
+    setQueued(saved?.files || []);
+  };
   const choose = (id: string) => {
+    setMenu(null);
+    switchComposer(id);
     setActive(id);
     setView("messages");
     setQuery("");
     setDrawer(false);
     setEditing(null);
+  };
+  const chooseSpace = (id: string) => {
+    const nextChannel = channelsInSpace(data, id)[0]?.id || "";
+    switchComposer(nextChannel);
+    setActiveSpace(id);
+    setActive(nextChannel);
+    setView("messages");
+    setQuery("");
+    setEditing(null);
+    setMenu(null);
+    setModal(null);
   };
   const upload = (files: FileList | null) => {
     if (!channel || !files?.length) return;
@@ -731,7 +810,7 @@ export default function App() {
     void run(() => commit({ ...data, preferences }));
   const visible = data.messages.filter(
     (m) =>
-      (query ? true : m.channelId === channel?.id) &&
+      (query ? spaceChannelIds.has(m.channelId) : m.channelId === channel?.id) &&
       (view !== "pins" || m.pinned) &&
       (!query ||
         `${m.text} ${m.attachments.map((a) => a.name).join(" ")}`
@@ -1028,33 +1107,19 @@ export default function App() {
           <Brand small />
         </button>
         <span className="rail-divider" />
-        <button
-          className={`rail-button ${view === "messages" ? "selected" : ""}`}
-          title="Mes salons"
-          aria-label="Mes salons"
-          onClick={() => {
-            setView("messages");
-            setQuery("");
-          }}
-        >
-          <MessageSquare size={21} />
-        </button>
-        <button
-          className={`rail-button ${view === "files" ? "selected" : ""}`}
-          title="Fichiers du salon"
-          aria-label="Fichiers du salon"
-          onClick={() => setView("files")}
-        >
-          <FolderOpen size={21} />
-        </button>
-        <button
-          className={`rail-button ${view === "pins" ? "selected" : ""}`}
-          title="Messages épinglés"
-          aria-label="Messages épinglés"
-          onClick={() => setView("pins")}
-        >
-          <Pin size={20} />
-        </button>
+        <div className="space-rail" aria-label="Espaces">
+          {spaces.map((item) => (
+            <button key={item.id}
+              className={`rail-button space-avatar ${item.id === space.id ? "selected" : ""}`}
+              title={item.name} disabled={busy} aria-label={`Ouvrir l’espace ${item.name}`}
+              aria-pressed={item.id === space.id}
+              onClick={() => chooseSpace(item.id)}>
+              <SpaceIllustration space={item} />
+            </button>
+          ))}
+          <button className="rail-button add-space" title="Créer un espace" aria-label="Créer un espace"
+            onClick={() => { setSpaceEdit(null); setModal("space"); }}><Plus size={22} /></button>
+        </div>
         <div className="rail-bottom">
           <button
             className="rail-button"
@@ -1072,9 +1137,9 @@ export default function App() {
       )}
       <aside className={`sidebar ${drawer ? "open" : ""}`}>
         <header className="workspace">
-          <div>
-            <strong>Mon espace</strong>
-          </div>
+          <button className="space-heading" disabled={busy} aria-label="Changer d’espace" onClick={() => setModal("spaces")}>
+            <span className="space-heading-name">{(space.image || space.icon) && <span className="space-heading-image"><SpaceIllustration space={space} /></span>}<strong>{space.name}</strong></span><ChevronDown size={17} />
+          </button>
           <button
             className="icon-button mobile-close"
             aria-label="Fermer les salons"
@@ -1082,7 +1147,7 @@ export default function App() {
           >
             <X size={20} />
           </button>
-          <LockKeyhole className="desktop-lock" size={16} />
+
         </header>
         <button
           className="sidebar-search"
@@ -1110,20 +1175,11 @@ export default function App() {
           </button>
         </div>
         <div className="channels">
-          {data.channels.map((c) => {
-            const Icon = icons[c.icon];
-            return (
-              <button
-                key={c.id}
-                className={`channel ${channel?.id === c.id ? "active" : ""}`}
-                onClick={() => choose(c.id)}
-              >
-                <Icon size={18} />
-                <span>{c.name}</span>
-                {channel?.id === c.id && <span className="active-mark" />}
-              </button>
-            );
-          })}
+          <SortableChannels key={space.id} channels={spaceChannels} selected={channel?.id} disabled={busy} onDraggingChange={setChannelDragging}
+            onChoose={choose} renderIcon={(c) => { const Icon = icons[c.icon]; return <Icon size={18} />; }}
+            onReorder={async (ids) => { await run(async () => {
+              await commit({ ...data, spaces: spacesOf(data).map((s) => s.id === space.id ? {...s, channelOrder: ids} : s) });
+            }); }} />
           <button
             className="add-channel"
             onClick={() => {
@@ -1427,6 +1483,9 @@ export default function App() {
                   const prior = visible[index - 1];
                   const separator =
                     !prior || day(prior.createdAt) !== day(m.createdAt);
+                  const compact = !query && view === "messages" && continuesMessageGroup(prior, m);
+                  const next = visible[index + 1];
+                  const followed = !query && view === "messages" && !!next && continuesMessageGroup(m, next);
                   return (
                     <div key={m.id}>
                       {separator && (
@@ -1435,15 +1494,18 @@ export default function App() {
                         </div>
                       )}
                       <article
-                        className={`message ${m.pinned ? "pinned" : ""}`}
+                        className={`message ${m.pinned ? "pinned" : ""} ${compact ? "message-continuation" : ""} ${followed ? "group-continues" : ""}`}
                       >
-                        <div className="message-avatar">M</div>
+                        {compact ? <time className="message-inline-time" dateTime={m.createdAt}
+                          title={new Date(m.createdAt).toLocaleString("fr-FR")} aria-label={`Envoyé à ${time(m.createdAt)}`}>
+                          {time(m.createdAt)}
+                        </time> : <div className="message-avatar" aria-hidden="true">M</div>}
                         <div className="message-body">
-                          <div className="message-meta">
-                            <strong>Moi</strong>
+                          {(!compact || m.updatedAt || m.pinned) && <div className="message-meta">
+                            {!compact && <><strong>Moi</strong>
                             <time dateTime={m.createdAt}>
                               {time(m.createdAt)}
-                            </time>
+                            </time></>}
                             {m.updatedAt && (
                               <span className="edited">modifié</span>
                             )}
@@ -1466,7 +1528,7 @@ export default function App() {
                                 }
                               </button>
                             )}
-                          </div>
+                          </div>}
                           {editing === m.id ? (
                             <form
                               className="edit-form"
@@ -1480,6 +1542,7 @@ export default function App() {
                                         ? {
                                             ...x,
                                             text: editText,
+                                            linkPreviews: x.linkPreviews?.filter((p) => previewUrls(editText).includes(p.url)),
                                             updatedAt: new Date().toISOString(),
                                           }
                                         : x,
@@ -1519,9 +1582,12 @@ export default function App() {
                               <Text text={m.text} />
                             </div>
                           )}
+                          {editing !== m.id && <MessageLinks message={m} onLoaded={queuePreview} />}
                           {m.attachments.length > 0 && (
                             <div className="attachment-list">
-                              {m.attachments.map((a) => (
+                              {m.attachments.map((a) => textPreviewKind(a) ? (
+                                <TextAttachment key={a.id} attachment={a} load={getFile} onDownload={() => download(a)} />
+                              ) : (
                                 <div
                                   className={
                                     a.mime.startsWith("image/")
@@ -1565,12 +1631,16 @@ export default function App() {
                             </div>
                           )}
                         </div>
-                        <div className="message-tools">
+                        <div className={`message-tools ${menu === m.id ? "open" : ""}`} onClick={(e) => e.stopPropagation()}>
+                          <button className="icon-button message-more" aria-label="Actions du message" aria-expanded={menu === m.id}
+                            aria-controls={`message-actions-${m.id}`} onClick={() => setMenu(menu === m.id ? null : m.id)}><MoreHorizontal size={17} /></button>
+                          <div className="message-action-buttons" id={`message-actions-${m.id}`}>
                           <button
                             className="icon-button"
                             title="Modifier"
                             aria-label="Modifier le message"
                             onClick={() => {
+                              setMenu(null);
                               setEditing(m.id);
                               setEditText(m.text);
                             }}
@@ -1585,7 +1655,8 @@ export default function App() {
                                 ? "Désépingler le message"
                                 : "Épingler le message"
                             }
-                            onClick={() =>
+                            onClick={() => {
+                              setMenu(null);
                               void run(() =>
                                 commit({
                                   ...data,
@@ -1595,8 +1666,8 @@ export default function App() {
                                       : x,
                                   ),
                                 }),
-                              )
-                            }
+                              );
+                            }}
                           >
                             <Pin size={15} />
                           </button>
@@ -1604,10 +1675,11 @@ export default function App() {
                             className="icon-button danger-hover"
                             title="Supprimer"
                             aria-label="Supprimer le message"
-                            onClick={() => removeMessage(m)}
+                            onClick={() => { setMenu(null); removeMessage(m); }}
                           >
                             <Trash2 size={15} />
                           </button>
+                          </div>
                         </div>
                       </article>
                     </div>
@@ -1665,7 +1737,7 @@ export default function App() {
               >
                 <Plus size={21} />
               </button>
-              <textarea
+              <AutoGrowTextarea
                 aria-label={`Écrire dans ${channel?.name}`}
                 placeholder={`Écrire dans #${channel?.name}`}
                 value={draft}
@@ -1782,9 +1854,54 @@ export default function App() {
           {setup(true)}
         </Modal>
       )}
+      {modal === "spaces" && (
+        <Modal title="Mes espaces" onClose={() => setModal(null)}>
+          <div className="space-list">
+            {spaces.map((item) => <div className="space-row" key={item.id}>
+              <button className={item.id === space.id ? "selected" : ""} onClick={() => chooseSpace(item.id)}>
+                <span className="space-list-icon"><SpaceIllustration space={item} /></span>
+                <strong>{item.name}</strong>{item.id === space.id && <Check size={17} />}
+              </button>
+              <button className="icon-button" aria-label={`Modifier l’espace ${item.name}`}
+                onClick={() => { setSpaceEdit(item); setModal("space"); }}><Pencil size={17} /></button>
+            </div>)}
+          </div>
+          <div className="modal-actions">
+            <button className="button primary" onClick={() => { setSpaceEdit(null); setModal("space"); }}><Plus size={17} />Créer un espace</button>
+          </div>
+        </Modal>
+      )}
+      {modal === "space" && (
+        <SpaceForm space={spaceEdit} busy={busy} onClose={() => setModal(null)}
+          onSave={(item) => void run(async () => {
+            const currentSpaces = spacesOf(data);
+            await commit({ ...data, spaces: spaceEdit ? currentSpaces.map((s) => s.id === item.id ? item : s) : [...currentSpaces, item] });
+            chooseSpace(item.id);
+          })}
+          onDelete={spaceEdit && spaces.length > 1 ? () => {
+            const id = spaceEdit.id;
+            setModal(null);
+            setConfirm({ text: "Supprimer cet espace, ses salons et tous leurs messages ?", action: () => {
+              setConfirm(null);
+              void run(async () => {
+                const current = session.current?.data || data;
+                const removed = new Set(current.channels.filter((c) => spaceOfChannel(current, c) === id).map((c) => c.id));
+                const messages = current.messages.filter((m) => !removed.has(m.channelId));
+                const attachments = current.messages.filter((m) => removed.has(m.channelId)).flatMap((m) => m.attachments);
+                await commit({ ...current, spaces: spacesOf(current).filter((s) => s.id !== id), channels: current.channels.filter((c) => !removed.has(c.id)), messages });
+                const remaining = new Set(session.current?.data.messages.flatMap((m) => m.attachments.map((a) => a.id)));
+                for (const a of attachments) if (!remaining.has(a.id)) await session.current?.removeFile(a.id);
+                if (session.current) setUsed(await session.current.usedBytes());
+              });
+            }});
+          } : undefined}
+        />
+      )}
       {modal === "channel" && (
         <ChannelForm
           channel={channelEdit}
+          spaces={spaces}
+          currentSpace={space.id}
           busy={busy}
           onClose={() => setModal(null)}
           onSave={(c) =>
@@ -1793,6 +1910,8 @@ export default function App() {
                 ? data.channels.map((x) => (x.id === c.id ? c : x))
                 : [...data.channels, c];
               await commit({ ...data, channels: next });
+              switchComposer(c.id);
+              setActiveSpace(c.spaceId || space.id);
               setActive(c.id);
               setModal(null);
               setDrawer(false);
@@ -1824,7 +1943,7 @@ export default function App() {
                         if (session.current)
                           setUsed(await session.current.usedBytes());
                         setActive(
-                          data.channels.find((c) => c.id !== id)?.id || "",
+                          spaceChannels.find((c) => c.id !== id)?.id || "",
                         );
                       });
                     },
@@ -1961,19 +2080,82 @@ function Toast({ text, onClose }: { text: string; onClose: () => void }) {
     </div>
   );
 }
+function SpaceIllustration({ space }: { space: Pick<Space, "name" | "icon" | "image"> }) {
+  if (space.image) return <img className="space-picture" src={space.image} alt="" draggable={false} />;
+  if (space.icon) {
+    const Icon = icons[space.icon];
+    return <Icon size={22} aria-hidden="true" />;
+  }
+  return <span aria-hidden="true">{space.name.split(/\s+/).slice(0, 2).map((word) => Array.from(word)[0]).join("").toLocaleUpperCase() || "N"}</span>;
+}
+function SpaceForm({ space, busy, onClose, onSave, onDelete }: {
+  space: Space | null; busy: boolean; onClose: () => void;
+  onSave: (space: Space) => void; onDelete?: () => void;
+}) {
+  const [name, setName] = useState(space?.name || "");
+  const [image, setImage] = useState(space?.image || null);
+  const [icon, setIcon] = useState<IconName | null>(space?.icon || null);
+  const [preparing, setPreparing] = useState(false);
+  const [error, setError] = useState("");
+  const picker = useRef<HTMLInputElement>(null);
+  const uploadImage = async (file?: File) => {
+    if (!file) return;
+    setPreparing(true);
+    setError("");
+    try { setImage(await prepareSpaceImage(file)); }
+    catch (e) { setError(e instanceof Error ? e.message : "Image indisponible."); }
+    finally { setPreparing(false); }
+  };
+  return <Modal title={space ? "Modifier l’espace" : "Nouvel espace"} onClose={onClose}>
+    <form onSubmit={(e) => {
+      e.preventDefault();
+      if (!preparing && !busy && name.trim()) onSave({ ...space, id: space?.id || crypto.randomUUID(), name: name.trim(), image, icon });
+    }}>
+      <label>Illustration</label>
+      <div className="space-image-editor">
+        <button type="button" className="space-image-preview" aria-label="Choisir une illustration" disabled={busy || preparing} onClick={() => picker.current?.click()}>
+          {preparing ? <LoaderCircle className="spin" size={24} /> : <SpaceIllustration space={{name, image, icon}} />}
+        </button>
+        <div className="space-image-actions">
+          <button type="button" className="button secondary" disabled={busy || preparing} onClick={() => picker.current?.click()}><Upload size={16} />Importer une image</button>
+          {image && <button type="button" className="text-button" disabled={busy || preparing} onClick={() => { setImage(null); setError(""); }}>Retirer l’image</button>}
+        </div>
+        <input ref={picker} type="file" className="hidden" aria-label="Image de l’espace" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" disabled={busy || preparing}
+          onChange={(e) => { void uploadImage(e.target.files?.[0]); e.target.value = ""; }} />
+      </div>
+      <div className="icon-picker space-icon-picker" aria-label="Icônes de l’espace">
+        <button type="button" aria-label="Utiliser les initiales" aria-pressed={!image && !icon} className={!image && !icon ? "selected" : ""} disabled={busy || preparing} onClick={() => { setIcon(null); setImage(null); setError(""); }}>Aa</button>
+        {Object.entries(icons).map(([key, Icon]) => <button key={key} type="button" aria-label={`Illustration ${key}`} aria-pressed={!image && icon === key}
+          className={!image && icon === key ? "selected" : ""} disabled={busy || preparing} onClick={() => { setIcon(key as IconName); setImage(null); setError(""); }}><Icon size={21} /></button>)}
+      </div>
+      {error && <p className="space-image-error" role="alert">{error}</p>}
+      <label htmlFor="space-name">Nom de l’espace</label>
+      <input id="space-name" placeholder="ex. Personnel" maxLength={40} value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+      <div className="modal-actions">
+        {onDelete && <button type="button" className="text-button danger-text push-left" disabled={busy || preparing} onClick={onDelete}><Trash2 size={15} />Supprimer</button>}
+        <button className="button primary" disabled={busy || preparing || !name.trim()}>{space ? "Enregistrer" : "Créer l’espace"}</button>
+      </div>
+    </form>
+  </Modal>;
+}
 function ChannelForm({
   channel,
+  spaces,
+  currentSpace,
   busy,
   onClose,
   onSave,
   onDelete,
 }: {
   channel: Channel | null;
+  spaces: Space[];
+  currentSpace: string;
   busy: boolean;
   onClose: () => void;
   onSave: (c: Channel) => void;
   onDelete?: () => void;
 }) {
+  const [spaceId, setSpaceId] = useState(channel?.spaceId || currentSpace);
   const [name, setName] = useState(channel?.name || ""),
     [description, setDescription] = useState(channel?.description || ""),
     [icon, setIcon] = useState<IconName>(channel?.icon || "hash");
@@ -1986,7 +2168,9 @@ function ChannelForm({
         onSubmit={(e) => {
           e.preventDefault();
           onSave({
+            ...channel,
             id: channel?.id || crypto.randomUUID(),
+            spaceId,
             name: name.trim(),
             description: description.trim(),
             icon,
@@ -2007,6 +2191,12 @@ function ChannelForm({
             </button>
           ))}
         </div>
+        {spaces.length > 1 && <>
+          <label htmlFor="channel-space">Espace</label>
+          <select id="channel-space" value={spaceId} onChange={(e) => setSpaceId(e.target.value)}>
+            {spaces.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </>}
         <label htmlFor="channel-name">Nom du salon</label>
         <input
           id="channel-name"

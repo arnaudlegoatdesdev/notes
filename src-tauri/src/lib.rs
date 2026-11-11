@@ -1,3 +1,4 @@
+mod links;
 mod oauth;
 mod session;
 #[cfg(target_os = "macos")]
@@ -14,7 +15,7 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().pubkey(key.trim()).build());
     }
     builder
-        .invoke_handler(tauri::generate_handler![oauth::native_authorize, session::native_cached_session, session::native_refresh_google, session::native_clear_session, updater_enabled])
+        .invoke_handler(tauri::generate_handler![links::open_external, links::fetch_link_resource, oauth::native_authorize, session::native_cached_session, session::native_refresh_google, session::native_clear_session, updater_enabled])
         .run(tauri::generate_context!())
         .expect("Impossible de démarrer Notes");
 }

@@ -1,4 +1,5 @@
-import type { Channel, Message, VaultData } from "./core/types";
+import type { Channel, Message, Space, VaultData } from "./core/types";
+import { withSpaces } from "./spaces";
 const equal = (a: unknown, b: unknown) =>
   JSON.stringify(a) === JSON.stringify(b);
 function later<T extends { changedAt?: string }>(a: T, b: T): T {
@@ -80,17 +81,46 @@ export function mergeVault(
   ].filter(Boolean);
   if (new Set(owners).size > 1)
     throw new Error("Ces notes appartiennent à des comptes différents.");
+  base = withSpaces(base);
+  left = withSpaces(left);
+  right = withSpaces(right);
+  const spaces = collection<Space>(base.spaces!, left.spaces!, right.spaces!);
   const channels = collection<Channel>(
       base.channels,
       left.channels,
       right.channels,
     ),
     live = new Set(channels.map((x) => x.id));
+  const movedOut = new Map<string, VaultData>();
+  for (const [survivor, deleted] of [[left, right], [right, left]]) {
+    const deletedChannels = new Set(deleted.channels.map((c) => c.id));
+    const deletedSpaces = new Set(deleted.spaces!.map((s) => s.id));
+    const originalChannels = new Map(base.channels.map((c) => [c.id, c]));
+    for (const c of survivor.channels) {
+      const original = originalChannels.get(c.id);
+      // Moving a channel out of a deleted space is independent of that deletion.
+      if (!live.has(c.id) && original && c.spaceId !== original.spaceId &&
+          !deletedChannels.has(c.id) && !deletedSpaces.has(original.spaceId!)) {
+        channels.push(c);
+        live.add(c.id);
+        movedOut.set(c.id, survivor);
+      }
+    }
+  }
   const mergedMessages = collection<Message>(
     base.messages,
     left.messages,
     right.messages,
   );
+  const liveMessages = new Set(mergedMessages.map((m) => m.id));
+  for (const survivor of [left, right]) {
+    for (const message of survivor.messages) {
+      if (movedOut.get(message.channelId) === survivor && !liveMessages.has(message.id)) {
+        mergedMessages.push(message);
+        liveMessages.add(message.id);
+      }
+    }
+  }
   // Preserve notes sent offline while the other device was deleting their channel.
   const previousMessages = new Set(base.messages.map((m) => m.id));
   for (const message of mergedMessages) {
@@ -104,6 +134,24 @@ export function mergeVault(
       live.add(restored.id);
     }
   }
+  // A channel created or moved offline must keep its destination space alive.
+  const liveSpaces = new Set(spaces.map((s) => s.id));
+  const originalChannels = new Map(base.channels.map((c) => [c.id, c]));
+  const newNoteChannels = new Set(mergedMessages.filter((m) => !previousMessages.has(m.id)).map((m) => m.channelId));
+  for (let i = channels.length - 1; i >= 0; i--) {
+    const c = channels[i];
+    if (liveSpaces.has(c.spaceId!)) continue;
+    const previous = originalChannels.get(c.id);
+    const newContent = newNoteChannels.has(c.id);
+    if (!previous || previous.spaceId !== c.spaceId || newContent) {
+      const restored = [...left.spaces!, ...right.spaces!, ...base.spaces!].find((s) => s.id === c.spaceId);
+      if (restored) { spaces.push(restored); liveSpaces.add(restored.id); continue; }
+    }
+    channels.splice(i, 1);
+    live.delete(c.id);
+  }
+  // Concurrent deletions of different spaces still leave a usable empty space.
+  if (!spaces.length) spaces.push({ id: base.id, name: "Mon espace" });
   const messages = mergedMessages
     .filter((m) => live.has(m.channelId))
     .sort(
@@ -113,6 +161,7 @@ export function mergeVault(
   return structuredClone({
     ...left,
     owner: left.owner || right.owner || base.owner,
+    spaces,
     channels,
     messages,
     preferences: fields(base.preferences, left.preferences, right.preferences),
@@ -123,6 +172,8 @@ export function stampChanges(
   next: VaultData,
   now = new Date().toISOString(),
 ): VaultData {
+  base = withSpaces(base);
+  next = withSpaces(next);
   const stamp = <T extends { id: string; changedAt?: string }>(
     old: T[],
     values: T[],
@@ -133,6 +184,7 @@ export function stampChanges(
     });
   return {
     ...next,
+    spaces: stamp(base.spaces!, next.spaces!),
     channels: stamp(base.channels, next.channels),
     messages: stamp(base.messages, next.messages),
     preferences: equal(base.preferences, next.preferences)

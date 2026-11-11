@@ -1,3 +1,4 @@
+import { isSpaceImage } from './space-image';
 import type { Attachment, EncryptedBundle, VaultData } from './types';
 
 const DB_NAME = 'notes-vault-v2';
@@ -238,16 +239,28 @@ function attachment(value: unknown): value is Attachment {
   return uuid(value.id) && text(value.name, 1024, false) && text(value.mime, 255) && number(value.size, MAX_FILE_BYTES) && number(value.storedSize, MAX_FILE_BYTES + 36) && value.storedSize === value.size + 36;
 }
 function validateData(value: unknown): asserts value is VaultData {
-  if (!isRecord(value) || value.version !== 1 || !uuid(value.id) || !timestamp(value.createdAt)) invalid();
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2) || !uuid(value.id) || !timestamp(value.createdAt)) invalid();
   if (!Array.isArray(value.channels) || (value.channels.length > 10_000) || !Array.isArray(value.messages) || value.messages.length > 100_000 || !isRecord(value.preferences)) invalid();
   if (value.owner !== undefined && (!isRecord(value.owner) || value.owner.provider !== 'google' || !text(value.owner.subject, 255, false))) invalid();
   const preferences = value.preferences;
   if (preferences.changedAt !== undefined && !timestamp(preferences.changedAt)) invalid();
-  if (!['slate', 'light', 'forest', 'sand', 'plum'].includes(String(preferences.theme)) || !['system', 'inter', 'serif', 'mono'].includes(String(preferences.font)) || !number(preferences.fontSize, 32) || Number(preferences.fontSize) < 12 || !number(preferences.limitBytes) || !preferences.limitBytes) invalid();
+  if (!['slate', 'light', 'forest', 'sand', 'plum', 'onyx'].includes(String(preferences.theme)) || !['system', 'inter', 'serif', 'mono'].includes(String(preferences.font)) || !number(preferences.fontSize, 32) || Number(preferences.fontSize) < 12 || !number(preferences.limitBytes) || !preferences.limitBytes) invalid();
+  const spaceIds = new Set<string>();
+  if (value.spaces !== undefined) {
+    if (!Array.isArray(value.spaces) || !value.spaces.length || value.spaces.length > 1000) invalid();
+    for (const space of value.spaces) {
+      if (!isRecord(space) || !uuid(space.id) || spaceIds.has(space.id) || !text(space.name, 100, false) || (space.changedAt !== undefined && !timestamp(space.changedAt))) invalid();
+      if (space.image !== undefined && space.image !== null && !isSpaceImage(space.image)) invalid();
+      if (space.icon !== undefined && space.icon !== null && !['hash', 'bookmark', 'image', 'file', 'plane', 'code', 'heart'].includes(String(space.icon))) invalid();
+      if (space.channelOrder !== undefined && (!Array.isArray(space.channelOrder) || space.channelOrder.length > 10_000 || new Set(space.channelOrder).size !== space.channelOrder.length || !space.channelOrder.every(uuid))) invalid();
+      spaceIds.add(space.id);
+    }
+  } else spaceIds.add(value.id);
   const channelIds = new Set<string>();
   for (const channel of value.channels) {
     if (!isRecord(channel) || !uuid(channel.id) || channelIds.has(channel.id) || !text(channel.name, 100, false) || !text(channel.description, 1000) || !['hash', 'bookmark', 'image', 'file', 'plane', 'code', 'heart'].includes(String(channel.icon))) invalid();
     if (channel.changedAt !== undefined && !timestamp(channel.changedAt)) invalid();
+    if (!spaceIds.has(String(channel.spaceId ?? value.id))) invalid();
     channelIds.add(channel.id);
   }
   const messageIds = new Set<string>();
@@ -255,6 +268,16 @@ function validateData(value: unknown): asserts value is VaultData {
   for (const message of value.messages) {
     if (!isRecord(message) || !uuid(message.id) || messageIds.has(message.id) || !channelIds.has(String(message.channelId)) || !text(message.text, 1_000_000) || !timestamp(message.createdAt) || (message.updatedAt !== undefined && !timestamp(message.updatedAt)) || !Array.isArray(message.attachments) || message.attachments.length > 100 || typeof message.pinned !== 'boolean') invalid();
     if (message.changedAt !== undefined && !timestamp(message.changedAt)) invalid();
+    if (message.linkPreviews !== undefined) {
+      if (!Array.isArray(message.linkPreviews) || message.linkPreviews.length > 3) invalid();
+      const urls = new Set<string>();
+      for (const preview of message.linkPreviews) {
+        if (!isRecord(preview) || !text(preview.url, 8192, false) || !/^https?:\/\//i.test(preview.url) || urls.has(preview.url) || !text(preview.title, 240, false) ||
+            (preview.description !== undefined && !text(preview.description, 600)) || (preview.siteName !== undefined && !text(preview.siteName, 100)) ||
+            (preview.image !== undefined && !isSpaceImage(preview.image))) invalid();
+        urls.add(preview.url);
+      }
+    }
     messageIds.add(message.id);
     for (const item of message.attachments) {
       if (!attachment(item)) invalid();

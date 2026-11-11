@@ -49,3 +49,15 @@ Les mises à jour intégrées utilisent le manifeste GitHub et une signature Tau
 Le même frontend est compilé en application Tauri universelle Intel / Apple Silicon. Le code OAuth et le renouvellement Google sont communs à Windows. La persistance remplace DPAPI par un élément de mot de passe générique du Trousseau macOS, propre à Notes. La déconnexion supprime cet élément. Le paquet exige macOS 12 ou ultérieur.
 
 La signature ad hoc permet la validation du paquet ; elle ne vaut pas notarisation Apple. Les mises à jour signées utilisent un manifeste distinct `latest-macos.json`. La version Windows et ses assets publiés restent inchangés.
+
+## Liens et aperçus
+
+Le document intercepte les clics sur les liens HTTP, HTTPS et mailto dans l’application native et appelle `open_external`. Le noyau valide le schéma et lance le navigateur ou le gestionnaire système. Les téléchargements de fichiers et liens blob restent gérés par le client.
+
+Les aperçus n’utilisent aucun serveur Notes. Le noyau lit uniquement des pages HTML et images publiques, avec taille, durée et redirections bornées. Chaque destination DNS est vérifiée et ses adresses sont épinglées à la connexion pour empêcher les requêtes vers le réseau privé. Les cookies, jetons et identifiants de proxy ne sont pas transmis. Le web utilise fetch avec CORS, sans credentials ni referrer, puis une carte simple si la lecture est bloquée.
+
+Seules les balises de métadonnées du document sont lues, sans insérer son HTML dans l’interface. Les images sont réduites en vignettes raster embarquées. Les cartes sont intégrées au manifeste chiffré et bénéficient de la même synchronisation que les messages. Un maximum de trois liens par message et une file de requêtes bornent le coût. Le cache de requêtes en mémoire est abandonné à la déconnexion. Les images d’un fichier Markdown ne sont pas chargées depuis le réseau.
+
+## Format 0.4.0
+
+Le manifeste passe en version 2 pour protéger les espaces, les ordres de salons et les aperçus contre l’écriture par les anciennes applications. Notes 0.4.0 ouvre les manifestes version 1 et les réenregistre automatiquement en version 2, sans mot de passe ni perte de contenu. Les appareils encore sous une version antérieure doivent mettre Notes à jour pour continuer la synchronisation. Les clés, identifiants de compte et pièces jointes sont conservés.

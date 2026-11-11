@@ -250,6 +250,34 @@ describe("concurrent PC and phone updates", () => {
       (await inspectManifest(key, await cloud.read(heads[0].file.id))).messages,
     ).toHaveLength(2);
   });
+  it("syncs spaces, channel moves and Onyx through encrypted Drive snapshots to a fresh device", async () => {
+    const {initial, key, session, cloud, root} = await setup();
+    const remote = structuredClone(initial);
+    remote.spaces![0].name = "Personnel";
+    remote.messages.push({...note(remote, "Depuis le téléphone https://example.com/article"), linkPreviews: [{url:'https://example.com/article', title:'Un article enregistré', image:'data:image/png;base64,YQ=='}]});
+    cloud.add(`n-${crypto.randomUUID()}--${root}.notes`, await sealManifest(key, stampChanges(initial, remote)));
+    const local = session.data;
+    const work = {id: crypto.randomUUID(), name: "Travail", icon: "code" as const, channelOrder: [] as string[],
+      image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="};
+    local.spaces!.push(work);
+    local.channels.push({...local.channels[0], id: crypto.randomUUID(), spaceId: work.id, name: "Documents"});
+    work.channelOrder = [local.channels[1].id, local.channels[0].id];
+    local.channels[0].spaceId = work.id;
+    local.preferences.theme = "onyx";
+    await session.save(stampChanges(initial, local));
+    const result = await syncVault(cloud, session, key, owner);
+    expect(result.session.data.spaces!.map((s) => s.name)).toEqual(["Personnel", "Travail"]);
+    expect(result.session.data.channels[0].spaceId).toBe(work.id);
+    expect(result.session.data.messages[0].text).toBe("Depuis le téléphone https://example.com/article");
+    expect(result.session.data.messages[0].linkPreviews![0].title).toBe('Un article enregistré');
+    expect(result.session.data.preferences.theme).toBe("onyx");
+    const expected = result.session.data;
+    result.session.lock();
+    await clearLocalVault();
+    writeSyncState(null);
+    const fresh = await openCloudVault(cloud, key, owner);
+    expect(fresh.data).toEqual(expected);
+  });
   it("keeps a live local session if the network fails after the atomic merge", async () => {
     const { initial, key, session, cloud, root } = await setup();
     const remote = structuredClone(initial);

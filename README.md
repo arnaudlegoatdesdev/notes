@@ -1,6 +1,6 @@
 # Notes
 
-Un espace personnel pour les mémos, les photos et les fichiers, organisé en salons. Le site mobile et les applications Windows et macOS partagent la même interface.
+Une application personnelle pour les mémos, les photos et les fichiers, organisés en espaces et en salons. Le site mobile et les applications Windows et macOS partagent la même interface.
 
 > Projet personnel développé rapidement à la demande de plusieurs personnes, avec une aide importante de l’IA pour le code, l’interface et la documentation. Il est indépendant de ma formation et de tout travail scolaire. Il ne représente pas une évaluation de mes compétences ou de mon apprentissage.
 
@@ -24,7 +24,13 @@ Sur Windows, l’accès Google est renouvelé automatiquement. Dans le navigateu
 
 - Salons personnalisables, messages modifiables et supprimables.
 - Fichiers, aperçus d’images, zoom, recherche et épingles.
-- Cinq thèmes, choix de police et taille du texte.
+- Aperçus Markdown et texte défilants et repliables dans le fil.
+- Salons réorganisables par glisser-déposer, au clavier ou sur mobile.
+- Messages rapprochés regroupés visuellement et zone de saisie qui grandit avec le texte.
+- Cartes de liens avec titre, description et image si disponibles. Dans le navigateur, repli sur une carte simple quand le site refuse CORS. Les aperçus obtenus dans l’app sont chiffrés et synchronisés avec les notes.
+- Ouverture des liens dans le navigateur système sur Windows et macOS.
+- Espaces distincts, chacun avec ses salons, sa recherche et une icône ou image personnalisée.
+- Six thèmes, dont Onyx pour les écrans OLED, choix de police et taille du texte.
 - Chiffrement local AES 256 GCM et synchronisation directe avec Google Drive.
 - Stockage local seul possible, avec avertissement sur l’absence de synchronisation.
 - Fusion automatique des modifications entre ordinateur et téléphone.
@@ -62,3 +68,7 @@ Node 24 est utilisé en CI. Pour Windows, installez les [prérequis Tauri](https
 Le DMG universel contient les architectures Intel et Apple Silicon et nécessite macOS 12 ou ultérieur. Glissez Notes dans Applications. Cette première distribution utilise une signature ad hoc, sans notarisation Apple ; macOS peut demander une autorisation à la première ouverture.
 
 Le workflow macOS est déclenché manuellement et ne compile pas Windows. Les mises à jour Mac utilisent `latest-macos.json`, séparé du manifeste Windows. Le code du premier binaire Mac 0.3.2 correspond au tag `mac-v0.3.2`.
+
+### Compatibilité 0.4.0
+
+Les notes existantes sont conservées et leur format est automatiquement actualisé. Mettez les applications à jour sur tous vos ordinateurs pour continuer la synchronisation avec le site. Les anciennes versions ne peuvent pas modifier le nouveau format.

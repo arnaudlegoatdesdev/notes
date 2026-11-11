@@ -81,6 +81,7 @@ beforeEach(async () => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 async function login() {
   fireEvent.click(
@@ -134,6 +135,120 @@ describe("Notes account and empty workspace flow", () => {
     await screen.findByRole("heading", { name: "Créez votre premier salon" });
     expect(screen.queryByLabelText(/mot de passe/i)).toBeNull();
     expect(connectCloud).not.toHaveBeenCalled();
+  });
+  it("separates spaces, search and drafts, moves channels, and saves Onyx across restarts", async () => {
+    const initial = createData();
+    initial.owner = {provider: "google", subject: user.id};
+    initial.channels.push({id: crypto.randomUUID(), spaceId: initial.id, name: "Personnel", description: "", icon: "hash"});
+    initial.messages.push({id: crypto.randomUUID(), channelId: initial.channels[0].id, text: "Une note privée", createdAt: new Date().toISOString(), attachments: [], pinned: false});
+    const record = makeAccess(user.id, initial.id);
+    await saveAccess(record);
+    await createVault(keyBytes(record), initial);
+    rememberStorage(user.id, "local");
+    vi.mocked(restoreGoogleSession).mockResolvedValue(user);
+    render(<App />);
+    await screen.findByRole("heading", {name: "Personnel", level: 1});
+    fireEvent.change(screen.getByRole("textbox", {name: "Écrire dans Personnel"}), {target: {value: "Brouillon personnel"}});
+    fireEvent.click(screen.getByRole("button", {name: "Créer un espace"}));
+    fireEvent.change(screen.getByLabelText("Nom de l’espace"), {target: {value: "Travail"}});
+    fireEvent.click(screen.getByRole("button", {name: "Créer l’espace"}));
+    await screen.findByRole("heading", {name: "Créez votre premier salon"});
+    expect(screen.queryByText("Une note privée")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Rechercher dans mon espace"), {target: {value: "privée"}});
+    expect(screen.queryByText("Une note privée")).toBeNull();
+    fireEvent.click(screen.getByRole("button", {name: "Effacer la recherche"}));
+    fireEvent.click(screen.getByRole("button", {name: "Ouvrir l’espace Mon espace"}));
+    await screen.findByText("Une note privée");
+    expect((screen.getByRole("textbox", {name: "Écrire dans Personnel"}) as HTMLTextAreaElement).value).toBe("Brouillon personnel");
+    fireEvent.click(screen.getByRole("button", {name: "Modifier le salon"}));
+    const selected = screen.getByLabelText("Espace") as HTMLSelectElement;
+    fireEvent.change(selected, {target: {value: [...selected.options].find((o) => o.text === "Travail")!.value}});
+    fireEvent.click(screen.getByRole("button", {name: "Enregistrer"}));
+    await waitFor(() => expect(screen.getByRole("button", {name: "Ouvrir l’espace Travail"}).getAttribute("aria-pressed")).toBe("true"));
+    expect(screen.getByText("Une note privée")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", {name: "Paramètres"}));
+    fireEvent.click(screen.getByRole("button", {name: "Onyx"}));
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("onyx"));
+    cleanup();
+    render(<App />);
+    await screen.findByRole("heading", {name: "Créez votre premier salon"});
+    fireEvent.click(screen.getByRole("button", {name: "Changer d’espace"}));
+    fireEvent.click(screen.getByRole("button", {name: "Modifier l’espace Travail"}));
+    fireEvent.change(screen.getByLabelText("Nom de l’espace"), {target: {value: "Projets"}});
+    fireEvent.click(screen.getByRole("button", {name: "Illustration heart"}));
+    fireEvent.click(screen.getByRole("button", {name: "Enregistrer"}));
+    await screen.findByRole("heading", {name: "Personnel", level: 1});
+    expect(document.documentElement.dataset.theme).toBe("onyx");
+    expect((await unlockVault(keyBytes(record))).data.spaces!.find((s) => s.name === "Projets")?.icon).toBe("heart");
+    fireEvent.click(screen.getByRole("button", {name: "Changer d’espace"}));
+    fireEvent.click(screen.getByRole("button", {name: "Modifier l’espace Projets"}));
+    fireEvent.click(screen.getByRole("button", {name: "Supprimer"}));
+    fireEvent.click(screen.getByRole("button", {name: "Confirmer"}));
+    await screen.findByRole("heading", {name: "Créez votre premier salon"});
+    expect(screen.queryByRole("button", {name: "Ouvrir l’espace Projets"})).toBeNull();
+    expect(screen.queryByText("Une note privée")).toBeNull();
+  });
+  it("compacts consecutive notes while keeping edits, pins, search results and individual deletion intact", async () => {
+    const initial = createData();
+    initial.owner = {provider: "google", subject: user.id};
+    const channelId = crypto.randomUUID();
+    initial.channels.push({id: channelId, spaceId: initial.id, name: "Personnel", description: "", icon: "hash"});
+    initial.messages = [
+      {id: crypto.randomUUID(), channelId, text: "Note première", createdAt: "2026-11-11T12:00:00Z", attachments: [], pinned: false},
+      {id: crypto.randomUUID(), channelId, text: "Note suivante", createdAt: "2026-11-11T12:01:00Z", updatedAt: "2026-11-11T12:02:00Z", attachments: [], pinned: true},
+      {id: crypto.randomUUID(), channelId, text: "Note après la pause", createdAt: "2026-11-11T12:07:00Z", attachments: [], pinned: false},
+    ];
+    const record = makeAccess(user.id, initial.id);
+    await saveAccess(record);
+    await createVault(keyBytes(record), initial);
+    rememberStorage(user.id, "local");
+    vi.mocked(restoreGoogleSession).mockResolvedValue(user);
+    const {container} = render(<App />);
+    await screen.findByText("Note suivante");
+    expect(container.querySelectorAll('.message-avatar')).toHaveLength(2);
+    const second = screen.getByText("Note suivante").closest('article')!;
+    expect(second.classList.contains('message-continuation')).toBe(true);
+    expect(second.textContent).toContain('modifié');
+    expect(second.textContent).toContain('Épinglé');
+    expect(second.querySelector('time')?.dateTime).toBe(initial.messages[1].createdAt);
+    fireEvent.change(screen.getByLabelText("Rechercher dans mon espace"), {target: {value: "Note"}});
+    expect(container.querySelectorAll('.message-avatar')).toHaveLength(3);
+    expect(container.querySelectorAll('.message-continuation')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', {name:'Effacer la recherche'}));
+    fireEvent.click(second.querySelector('button[aria-label="Modifier le message"]')!);
+    fireEvent.change(screen.getByRole('textbox', {name:'Modifier le message'}), {target: {value:'Note corrigée'}});
+    fireEvent.click(screen.getByRole('button', {name:'Enregistrer'}));
+    await screen.findByText('Note corrigée');
+    await waitFor(() => expect((container.querySelector('.composer .attach-button') as HTMLButtonElement).disabled).toBe(false));
+    const corrected = screen.getByText('Note corrigée').closest('article')!;
+    const actions = corrected.querySelector('button[aria-label="Actions du message"]')!;
+    fireEvent.click(actions);
+    expect(actions.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(corrected.querySelector('button[aria-label="Supprimer le message"]')!);
+    fireEvent.click(screen.getByRole('button', {name:'Confirmer'}));
+    await waitFor(() => expect(screen.queryByText('Note corrigée')).toBeNull());
+    expect(screen.getByText('Note première')).toBeTruthy();
+    expect(screen.getByText('Note après la pause')).toBeTruthy();
+    expect((await unlockVault(keyBytes(record))).data.messages).toHaveLength(2);
+  });
+  it("saves automatically fetched link cards encrypted and reuses them after restarting", async () => {
+    const initial = createData();
+    initial.owner = {provider: "google", subject: user.id};
+    const channelId = crypto.randomUUID();
+    initial.channels.push({id:channelId, spaceId:initial.id, name:"Liens",description:"",icon:"bookmark"});
+    initial.messages.push({id:crypto.randomUUID(),channelId,text:"https://example.com/article",createdAt:new Date().toISOString(),attachments:[],pinned:false});
+    const record = makeAccess(user.id, initial.id);
+    await saveAccess(record); await createVault(keyBytes(record), initial); rememberStorage(user.id,"local");
+    vi.mocked(restoreGoogleSession).mockResolvedValue(user);
+    const fetcher = vi.fn(async () => new Response('<title>Un document enregistré</title>', {headers:{'Content-Type':'text/html'}}));
+    vi.stubGlobal('fetch',fetcher);
+    render(<App />);
+    await screen.findByRole('link',{name:'Un document enregistré'});
+    await waitFor(async () => expect((await unlockVault(keyBytes(record))).data.messages[0].linkPreviews?.[0]?.title).toBe('Un document enregistré'), {timeout:3000});
+    const count = fetcher.mock.calls.length;
+    cleanup(); render(<App />);
+    await screen.findByRole('link',{name:'Un document enregistré'});
+    expect(fetcher).toHaveBeenCalledTimes(count);
   });
   it("opens Drive automatically on a fresh phone after a previous grant, without asking storage again", async () => {
     const data = createData();
@@ -226,6 +341,8 @@ describe("Notes account and empty workspace flow", () => {
   it("restores the account and notes after restart without opening Google, then honors sign-out", async () => {
     const initial = createData();
     initial.owner = { provider: "google", subject: user.id };
+    initial.version = 1;
+    delete initial.spaces;
     initial.channels.push({
       id: crypto.randomUUID(),
       name: "Retrouvé",
@@ -241,6 +358,7 @@ describe("Notes account and empty workspace flow", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Retrouvé", level: 1 });
     expect(signInGoogle).not.toHaveBeenCalled();
+    expect((await unlockVault(keyBytes(record))).data.version).toBe(2);
     fireEvent.click(screen.getByRole("button", { name: "Paramètres" }));
     fireEvent.click(screen.getByRole("button", { name: "Déconnexion" }));
     await screen.findByRole("button", { name: "Continuer avec Google" });
