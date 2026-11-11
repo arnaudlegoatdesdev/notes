@@ -95,6 +95,8 @@ import { selectSyncAccount } from "./sync-state";
 import { packSession, unpackBundle } from "./archive";
 import { createData } from "./seed";
 import { isDesktop, checkForUpdate } from "./desktop";
+import { browserCloseGuard, nativeCloseGuard, pendingNativeWork, finishNativeExit } from "./close-behavior";
+import { LocalChanges, type LocalChange } from "./local-changes";
 import { handleNativeLinks } from "./external-links";
 import MessageLinks from "./components/MessageLinks";
 import { clearLinkPreviewCache, messageLinkParts, previewUrls } from "./link-previews";
@@ -277,6 +279,8 @@ export default function App() {
   const session = useRef<VaultSession | null>(null);
   const access = useRef<AccessRecord | null>(null);
   const syncDone = useRef<Promise<void> | null>(null);
+  const localDone = useRef<Promise<void> | null>(null);
+  const lastSyncError = useRef<Error | null>(null);
   const [identity, setIdentity] = useState<GoogleUser | null>(null);
   const [active, setActive] = useState("");
   const [activeSpace, setActiveSpace] = useState("");
@@ -307,6 +311,25 @@ export default function App() {
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState("");
   useEffect(() => handleNativeLinks(setNotice), []);
+  const [localPending, setLocalPending] = useState(0);
+  const [closeError, setCloseError] = useState<string | null>(null);
+  const closeRetry = useRef<(() => Promise<void>) | null>(null);
+  const [failedChanges, setFailedChanges] = useState<LocalChange[]>([]);
+  const changes = useRef<LocalChanges | null>(null);
+  const cloudConnection = useRef(connection);
+  cloudConnection.current = connection;
+  if (!changes.current) changes.current = new LocalChanges({
+    session: () => session.current,
+    data: setData,
+    state: (pending, failed) => { setLocalPending(pending); setFailedChanges([...failed]); },
+    saved: () => {
+      markDirty();
+      const current = session.current;
+      if (current) void current.usedBytes().then(value => { if (session.current === current) setUsed(value); }).catch(() => undefined);
+      setSyncStatus((current) => cloudConnection.current ? (syncLock.current ? "syncing" : "pending") : current === "error" ? "error" : "local");
+    },
+    error: setNotice,
+  });
   const [needsReconnect, setNeedsReconnect] = useState(false);
   const [modal, setModal] = useState<
     "onboarding" | "settings" | "channel" | "spaces" | "space" | "connect" | "import" | null
@@ -376,7 +399,7 @@ export default function App() {
     searchInput = useRef<HTMLInputElement>(null),
     input = useRef<HTMLInputElement>(null);
   const syncBlock = useRef(false);
-  syncBlock.current = !!(channelDragging || modal || confirm || editing || draft || queued.length || [...composers.current.values()].some((c) => c.files.length));
+  syncBlock.current = modal === "onboarding" || modal === "import";
   const syncLock = useRef(false);
   const busyRef = useRef(false);
   const spaces = spacesOf(data);
@@ -505,14 +528,17 @@ export default function App() {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
+    let resolveLocal!: () => void;
+    localDone.current = new Promise<void>((resolve) => { resolveLocal = resolve; });
     try {
-      if (syncDone.current) await syncDone.current;
       await action();
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "Une erreur est survenue.");
     } finally {
       busyRef.current = false;
       setBusy(false);
+      localDone.current = null;
+      resolveLocal();
     }
   };
   const commit = async (next: VaultData) => {
@@ -520,31 +546,16 @@ export default function App() {
       throw new Error("Connectez-vous à Notes.");
     if (!identity) throw new Error("Connectez-vous avec Google.");
     assertVaultOwner(next, identity.id);
-    const live = session.current.data;
-    for (const added of next.messages.filter(
-      (m) => !data.messages.some((old) => old.id === m.id),
-    )) {
-      if (
-        !live.channels.some((c) => c.id === added.channelId) &&
-        !next.channels.some(
-          (c) =>
-            c.id === added.channelId &&
-            !data.channels.some((old) => old.id === c.id),
-        )
-      )
-        throw new Error(
-          "Ce salon a été supprimé sur un autre appareil. Votre brouillon est conservé.",
-        );
-    }
-    const merged = mergeVault(data, live, stampChanges(data, next));
-    await session.current.save({
-      ...merged,
-      owner: merged.owner || { provider: "google", subject: identity.id },
-    });
+    const base = data;
+    const stamped = stampChanges(base, next);
+    await session.current.update((live) => ({
+      ...mergeVault(base, live, stamped),
+      owner: live.owner || { provider: "google", subject: identity.id },
+    }));
     markDirty();
-    setData(session.current.data);
+    changes.current?.refresh();
     setUsed(await session.current.usedBytes());
-    setSyncStatus(connection ? "pending" : "local");
+    setSyncStatus(connection ? (syncLock.current ? "syncing" : "pending") : "local");
   };
   useEffect(() => {
     if (mode !== "vault" || !previewQueue.current.size || busy || syncBlock.current || syncLock.current) return;
@@ -570,13 +581,13 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [previewRevision, mode, busy, data, modal, confirm, editing, draft, queued, channelDragging, syncStatus]);
   const synchronize = useCallback(
-    async (conn = connection) => {
+    async (conn = connection, force = false) => {
       if (
         !conn ||
         !session.current ||
         syncLock.current ||
-        busyRef.current ||
-        syncBlock.current
+        (busyRef.current && !force) ||
+        (syncBlock.current && !force)
       )
         return;
       if (!access.current || !identity) return;
@@ -588,6 +599,7 @@ export default function App() {
       setSyncStatus("syncing");
       setSyncError("");
       setNeedsReconnect(false);
+      lastSyncError.current = null;
       try {
         await publishAccess(conn, access.current);
         const result = await syncVault(
@@ -595,17 +607,20 @@ export default function App() {
           session.current,
           keyBytes(access.current),
           identity.id,
+          () => changes.current?.refresh(),
         );
+        if (cloudConnection.current !== conn) return;
         session.current = result.session;
-        setData(result.session.data);
+        changes.current?.refresh();
         setUsed(await result.session.usedBytes());
         setCloudBytes(result.cloudBytes);
         setQuota(result.quota);
-        setSyncStatus(result.pending ? "pending" : "synced");
+        setSyncStatus(result.pending || readSyncState()?.dirty || changes.current?.unsaved ? "pending" : "synced");
       } catch (e) {
+        lastSyncError.current = e instanceof Error ? e : new Error("Synchronisation indisponible.");
         if (e instanceof SyncFailure) {
           session.current = e.session;
-          setData(e.session.data);
+          changes.current?.refresh();
           setUsed(await e.session.usedBytes());
         }
         setSyncStatus("error");
@@ -624,7 +639,7 @@ export default function App() {
   );
   useEffect(() => {
     if (connection && syncStatus === "pending" && !busy && !syncBlock.current) {
-      const t = setTimeout(() => void synchronize(), 650);
+      const t = setTimeout(() => void synchronize(), 1200);
       return () => clearTimeout(t);
     }
   }, [
@@ -658,9 +673,42 @@ export default function App() {
       clearInterval(timer);
     };
   }, [connection, synchronize]);
+  const usesCloud = () => !!(cloudConnection.current || (identity && storageChoice(identity.id) === "drive"));
+  const hasPendingWork = () => !!(changes.current?.unsaved || busyRef.current || (usesCloud() && (syncLock.current || readSyncState()?.dirty)));
+  const flushPendingWork = async (skipForeground = false) => {
+    if (!skipForeground && localDone.current) await localDone.current;
+    await changes.current?.flush();
+    if (syncDone.current) await syncDone.current;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const conn = cloudConnection.current;
+      if (!readSyncState()?.dirty) return;
+      if (!conn) {
+        if (usesCloud()) throw new Error("Reconnectez Google Drive pour terminer la synchronisation.");
+        return;
+      }
+      await synchronize(conn, true);
+      if (lastSyncError.current) throw lastSyncError.current;
+      await changes.current?.flush();
+    }
+    if (readSyncState()?.dirty) throw new Error("La synchronisation n’est pas encore terminée.");
+  };
+  const closingCallbacks = useRef({hasPending: hasPendingWork, flush: flushPendingWork});
+  closingCallbacks.current = {hasPending: hasPendingWork, flush: flushPendingWork};
+  useEffect(() => {
+    if (!isDesktop) return browserCloseGuard(() => closingCallbacks.current.hasPending());
+    let disposed = false;
+    let release: (() => void) | undefined;
+    void nativeCloseGuard({hasPending: () => closingCallbacks.current.hasPending(), flush: () => closingCallbacks.current.flush(), error: (error) => setCloseError(error.message)})
+      .then((guard) => { if (disposed) guard.dispose(); else { release = guard.dispose; closeRetry.current = guard.retry; } })
+      .catch(() => setNotice("La fermeture en arrière-plan n’est pas disponible dans cette version de Notes."));
+    return () => { disposed = true; release?.(); closeRetry.current = null; };
+  }, []);
+  useEffect(() => {
+    if (isDesktop) void pendingNativeWork(hasPendingWork()).catch(() => undefined);
+  }, [localPending, failedChanges.length, busy, syncStatus, connection]);
   const lock = () => {
-    if (busyRef.current || syncLock.current) {
-      setNotice("Attendez la fin de l’opération avant de vous déconnecter.");
+    if (busyRef.current || syncLock.current || changes.current?.unsaved) {
+      setNotice("Attendez l’enregistrement des modifications avant de vous déconnecter.");
       return;
     }
     session.current?.lock();
@@ -737,38 +785,22 @@ export default function App() {
   const send = (e?: FormEvent) => {
     e?.preventDefault();
     if (!channel || (!draft.trim() && !queued.length)) return;
-    void run(async () => {
-      const m: Message = {
-        id: crypto.randomUUID(),
-        channelId: channel.id,
-        text: draft.trim(),
-        createdAt: new Date().toISOString(),
-        attachments: queued,
-        pinned: false,
-      };
-      await commit({ ...data, messages: [...data.messages, m] });
-      setDraft("");
-      setQueued([]);
-    });
+    const message: Message = {id: crypto.randomUUID(), channelId: channel.id, text: draft.trim(), createdAt: new Date().toISOString(), attachments: queued, pinned: false};
+    setDraft("");
+    setQueued([]);
+    changes.current?.add("Envoyer le message", (current) => current.messages.some((m) => m.id === message.id) ? current : {...current, messages: [...current.messages, message]});
   };
-  const removeMessage = (m: Message) =>
-    setConfirm({
-      text: "Supprimer ce message et ses pièces jointes ?",
-      action: () => {
-        setConfirm(null);
-        void run(async () => {
-          const current = session.current?.data || data;
-          await commit({
-            ...current,
-            messages: current.messages.filter((x) => x.id !== m.id),
-          });
-          for (const a of m.attachments) {
-            if (session.current) await session.current.removeFile(a.id);
-          }
-          if (session.current) setUsed(await session.current.usedBytes());
-        });
-      },
-    });
+  const removeMessage = (message: Message) => setConfirm({
+    text: "Supprimer ce message et ses pièces jointes ?",
+    action: () => {
+      setConfirm(null);
+      changes.current?.add("Supprimer le message", (current) => ({...current, messages: current.messages.filter((m) => m.id !== message.id)}), async (current) => {
+        const referenced = new Set(current.data.messages.flatMap((m) => m.attachments.map((a) => a.id)));
+        for (const item of message.attachments) if (!referenced.has(item.id)) await current.removeFile(item.id);
+        setUsed(await current.usedBytes());
+      });
+    },
+  });
   const getFile = useCallback(
     async (a: Attachment) => session.current?.readFile(a),
     [],
@@ -792,6 +824,7 @@ export default function App() {
     });
   const exportBackup = () =>
     void run(async () => {
+      await changes.current?.flush();
       if (!session.current)
         throw new Error("Créez votre coffre pour exporter une sauvegarde.");
       const blob = await packSession(
@@ -832,7 +865,10 @@ export default function App() {
             : "";
 
   const signOut = () => {
-    if (busyRef.current || syncLock.current) return;
+    if (busyRef.current || syncLock.current || changes.current?.unsaved) {
+      setNotice("Attendez l’enregistrement des modifications avant de vous déconnecter.");
+      return;
+    }
     busyRef.current = true;
     setBusy(true);
     void signOutGoogle()
@@ -948,6 +984,8 @@ export default function App() {
   };
   const finishSetup = (opts: VaultOptions) =>
     run(async () => {
+      await changes.current?.flush();
+      if (syncDone.current) await syncDone.current;
       if (!identity) throw new Error("Connectez-vous avec Google.");
       let next: VaultSession,
         record = opts.access;
@@ -1296,6 +1334,11 @@ export default function App() {
             </button>
           </div>
         </header>
+        {failedChanges.length > 0 && <div className="sync-error" role="alert">
+          <AlertCircle size={17} /><span>Une modification n’a pas été enregistrée.</span>
+          <button onClick={() => changes.current?.retryFailed()}>Réessayer</button>
+          <button onClick={() => changes.current?.discardFailed()}>Annuler</button>
+        </div>}
         {syncError && (
           <div className="sync-error">
             <AlertCircle size={17} />
@@ -1355,7 +1398,7 @@ export default function App() {
               onClick={() =>
                 connection ? void synchronize() : setModal("connect")
               }
-              disabled={busy || syncStatus === "syncing"}
+              disabled={busy}
             >
               {syncStatus === "syncing" ? (
                 <LoaderCircle size={13} className="spin" />
@@ -1534,22 +1577,10 @@ export default function App() {
                               className="edit-form"
                               onSubmit={(e) => {
                                 e.preventDefault();
-                                void run(async () => {
-                                  await commit({
-                                    ...data,
-                                    messages: data.messages.map((x) =>
-                                      x.id === m.id
-                                        ? {
-                                            ...x,
-                                            text: editText,
-                                            linkPreviews: x.linkPreviews?.filter((p) => previewUrls(editText).includes(p.url)),
-                                            updatedAt: new Date().toISOString(),
-                                          }
-                                        : x,
-                                    ),
-                                  });
-                                  setEditing(null);
-                                });
+                                const value = editText;
+                                const at = new Date().toISOString();
+                                changes.current?.add("Modifier le message", (current) => ({...current, messages: current.messages.map((x) => x.id === m.id ? {...x, text: value, linkPreviews: x.linkPreviews?.filter((p) => previewUrls(value).includes(p.url)), updatedAt: at} : x)}));
+                                setEditing(null);
                               }}
                             >
                               <textarea
@@ -1657,16 +1688,8 @@ export default function App() {
                             }
                             onClick={() => {
                               setMenu(null);
-                              void run(() =>
-                                commit({
-                                  ...data,
-                                  messages: data.messages.map((x) =>
-                                    x.id === m.id
-                                      ? { ...x, pinned: !x.pinned }
-                                      : x,
-                                  ),
-                                }),
-                              );
+                              const pinned = !m.pinned;
+                              changes.current?.add("Épingler le message", (current) => ({...current, messages: current.messages.map((x) => x.id === m.id ? {...x, pinned} : x)}));
                             }}
                           >
                             <Pin size={15} />
@@ -1732,7 +1755,7 @@ export default function App() {
                 type="button"
                 title="Ajouter un fichier"
                 aria-label="Ajouter un fichier"
-                disabled={busy || syncStatus === "syncing"}
+                disabled={busy}
                 onClick={() => input.current?.click()}
               >
                 <Plus size={21} />
@@ -1824,6 +1847,15 @@ export default function App() {
           onClose={() => setGallery(null)}
         />
       )}
+      {closeError && <Modal title="Synchronisation en attente" onClose={() => setCloseError(null)}>
+        <p className="modal-copy">{closeError}</p>
+        <p className="modal-copy">{changes.current?.unsaved ? "Certaines modifications ne sont pas encore enregistrées." : "Vos modifications restent enregistrées sur cet appareil."}</p>
+        <div className="modal-actions">
+          <button className="text-button push-left" onClick={() => setCloseError(null)}>Rester dans Notes</button>
+          <button className="button secondary" disabled={localPending > 0 || busy} onClick={() => void finishNativeExit().catch(() => setNotice("Impossible de quitter Notes."))}>Quitter quand même</button>
+          <button className="button primary" onClick={() => { setCloseError(null); void closeRetry.current?.(); }}>Réessayer</button>
+        </div>
+      </Modal>}
       {confirm && (
         <Modal title="Confirmer" onClose={() => setConfirm(null)}>
           <p className="modal-copy">{confirm.text}</p>
@@ -1884,6 +1916,7 @@ export default function App() {
             setConfirm({ text: "Supprimer cet espace, ses salons et tous leurs messages ?", action: () => {
               setConfirm(null);
               void run(async () => {
+                await changes.current?.flush();
                 const current = session.current?.data || data;
                 const removed = new Set(current.channels.filter((c) => spaceOfChannel(current, c) === id).map((c) => c.id));
                 const messages = current.messages.filter((m) => !removed.has(m.channelId));
@@ -1927,6 +1960,7 @@ export default function App() {
                     action: () => {
                       setConfirm(null);
                       void run(async () => {
+                        await changes.current?.flush();
                         const current = session.current?.data || data;
                         const attachments = current.messages
                           .filter((m) => m.channelId === id)
@@ -2035,6 +2069,7 @@ export default function App() {
           update={update}
           onInstall={() =>
             void run(async () => {
+              await flushPendingWork(true);
               await update?.install();
             })
           }
@@ -2045,6 +2080,8 @@ export default function App() {
               action: () => {
                 setConfirm(null);
                 void run(async () => {
+                  await changes.current?.flush();
+                  if (syncDone.current) await syncDone.current;
                   session.current?.lock();
                   session.current = null;
                   access.current = null;

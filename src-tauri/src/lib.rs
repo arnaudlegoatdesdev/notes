@@ -1,3 +1,4 @@
+mod lifecycle;
 mod links;
 mod oauth;
 mod session;
@@ -11,11 +12,15 @@ fn updater_enabled() -> bool {
 
 pub fn run() {
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_process::init());
+    #[cfg(target_os = "macos")]
+    { builder = builder.menu(lifecycle::mac_menu).on_menu_event(lifecycle::menu_event); }
     if let Some(key) = option_env!("FLION_UPDATER_PUBLIC_KEY").filter(|key| !key.trim().is_empty()) {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().pubkey(key.trim()).build());
     }
     builder
-        .invoke_handler(tauri::generate_handler![links::open_external, links::fetch_link_resource, oauth::native_authorize, session::native_cached_session, session::native_refresh_google, session::native_clear_session, updater_enabled])
-        .run(tauri::generate_context!())
-        .expect("Impossible de démarrer Notes");
+        .manage(lifecycle::PendingWork::default())
+        .invoke_handler(tauri::generate_handler![lifecycle::set_pending_work, lifecycle::finish_background_exit, links::open_external, links::fetch_link_resource, oauth::native_authorize, session::native_cached_session, session::native_refresh_google, session::native_clear_session, updater_enabled])
+        .build(tauri::generate_context!())
+        .expect("Impossible de démarrer Notes")
+        .run(lifecycle::handle_exit);
 }

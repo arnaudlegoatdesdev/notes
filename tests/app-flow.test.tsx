@@ -11,7 +11,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import App from "../src/App";
-import { clearLocalVault, createVault, unlockVault } from "../src/core/vault";
+import { clearLocalVault, createVault, unlockVault, localManifest, inspectManifest } from "../src/core/vault";
 import { createData } from "../src/seed";
 import { selectVaultAccount } from "../src/core/vault";
 import { selectSyncAccount } from "../src/sync-state";
@@ -25,7 +25,7 @@ import {
   saveAccess,
   publishAccess,
 } from "../src/access";
-import { syncVault, writeSyncState } from "../src/sync-v2";
+import { syncVault, writeSyncState, readSyncState } from "../src/sync-v2";
 const user = {
   id: "google-flow-person",
   name: "Test",
@@ -89,6 +89,96 @@ async function login() {
   );
 }
 describe("Notes account and empty workspace flow", () => {
+  it("still warns about unsent Drive changes when its Google authorization must be renewed", async () => {
+    const data = createData();
+    data.owner = {provider: "google", subject: user.id};
+    const record = makeAccess(user.id, data.id);
+    await saveAccess(record);
+    await createVault(keyBytes(record), data);
+    rememberStorage(user.id, "drive");
+    writeSyncState({provider: "google", head: null, dirty: true});
+    vi.mocked(restoreGoogleSession).mockResolvedValue(user);
+    render(<App />);
+    await screen.findByText("Reconnectez Google Drive pour reprendre la synchronisation.");
+    const event = new Event("beforeunload", {cancelable: true});
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(connectCloud).not.toHaveBeenCalled();
+  });
+  it("keeps sending, editing, pinning and deleting responsive while Drive is stalled", async () => {
+    const data = createData();
+    data.owner = {provider: "google", subject: user.id};
+    const channelId = crypto.randomUUID();
+    data.channels.push({id: channelId, spaceId: data.id, name: "Personnel", description: "", icon: "hash"});
+    const record = makeAccess(user.id, data.id);
+    await saveAccess(record);
+    const session = await createVault(keyBytes(record), data);
+    const objects = new Map<string, {name: string; bytes: Uint8Array}>();
+    let pause = false, entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(r => {entered = r;}), gate = new Promise<void>(r => {release = r;});
+    const conn = {
+      provider: "google" as const, account: user.email,
+      list: async () => [...objects].map(([id, f]) => ({id, name: f.name, size: f.bytes.byteLength})),
+      read: async (id: string) => objects.get(id)!.bytes.slice(),
+      create: async (name: string, bytes: Uint8Array) => {
+        if (pause && name.startsWith("n-")) {entered(); await gate;}
+        const id = crypto.randomUUID(); objects.set(id, {name, bytes: bytes.slice()}); return {id, name, size: bytes.byteLength};
+      },
+      quota: async () => ({total: 15e9, used: 0}), disconnect: async () => {},
+    };
+    await publishAccess(conn, record);
+    await syncVault(conn, session, keyBytes(record), user.id);
+    session.lock();
+    rememberStorage(user.id, "drive");
+    vi.mocked(driveGrant).mockReturnValue({accessToken: "already-granted", expiresIn: 3600});
+    vi.mocked(restoreGoogleSession).mockResolvedValue(user);
+    vi.mocked(connectCloud).mockResolvedValue(conn);
+    const {container} = render(<App />);
+    fireEvent.click(await screen.findByRole("button", {name: "Envoi en attente"}));
+    await screen.findByRole("button", {name: "À jour sur le cloud"}, {timeout: 3000});
+    const send = (text: string) => {
+      fireEvent.change(screen.getByRole("textbox", {name: "Écrire dans Personnel"}), {target: {value: text}});
+      fireEvent.click(screen.getByRole("button", {name: "Envoyer le message"}));
+    };
+    pause = true;
+    send("Premier message");
+    fireEvent.click(await screen.findByRole("button", {name: "Envoi en attente"}));
+    await waiting;
+    try {
+      send("Deuxième message");
+      send("Troisième message");
+      expect(screen.getByText("Deuxième message")).toBeTruthy();
+      expect(screen.getByText("Troisième message")).toBeTruthy();
+      expect((screen.getByRole("button", {name: "Ajouter un fichier"}) as HTMLButtonElement).disabled).toBe(false);
+      const second = screen.getByText("Deuxième message").closest("article")!;
+      fireEvent.click(second.querySelector('button[aria-label="Modifier le message"]')!);
+      fireEvent.change(screen.getByRole("textbox", {name: "Modifier le message"}), {target: {value: "Message corrigé"}});
+      fireEvent.click(screen.getByRole("button", {name: "Enregistrer"}));
+      expect(screen.getByText("Message corrigé")).toBeTruthy();
+      const corrected = screen.getByText("Message corrigé").closest("article")!;
+      fireEvent.click(corrected.querySelector('button[aria-label="Épingler le message"]')!);
+      fireEvent.click(screen.getByText("Premier message").closest("article")!.querySelector('button[aria-label="Supprimer le message"]')!);
+      fireEvent.click(screen.getByRole("button", {name: "Confirmer"}));
+      expect(screen.queryByText("Premier message")).toBeNull();
+      // Wait for the independent local queue, without releasing the network.
+      await waitFor(async () => {
+        const local = await inspectManifest(keyBytes(record), (await localManifest())!);
+        expect(local.messages.map(m => m.text)).toEqual(["Message corrigé", "Troisième message"]);
+        expect(local.messages[0].pinned).toBe(true);
+      });
+      const leaving = new Event("beforeunload", {cancelable: true});
+      window.dispatchEvent(leaving);
+      expect(leaving.defaultPrevented).toBe(true);
+      expect(container.querySelector(".composer textarea")?.textContent).toBe("");
+    } finally { pause = false; release(); }
+    await screen.findByRole("button", {name: "Envoi en attente"});
+    fireEvent.click(screen.getByRole("button", {name: "Envoi en attente"}));
+    await screen.findByRole("button", {name: "À jour sur le cloud"});
+    expect(readSyncState()?.dirty).toBe(false);
+    const leaving = new Event("beforeunload", {cancelable: true});
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(false);
+  });
   it("starts without channels or password, supports deleting the last channel, and reopens through Google", async () => {
     render(<App />);
     await login();
@@ -229,7 +319,7 @@ describe("Notes account and empty workspace flow", () => {
     await waitFor(() => expect(screen.queryByText('Note corrigée')).toBeNull());
     expect(screen.getByText('Note première')).toBeTruthy();
     expect(screen.getByText('Note après la pause')).toBeTruthy();
-    expect((await unlockVault(keyBytes(record))).data.messages).toHaveLength(2);
+    await waitFor(async () => expect((await inspectManifest(keyBytes(record), (await localManifest())!)).messages).toHaveLength(2));
   });
   it("saves automatically fetched link cards encrypted and reuses them after restarting", async () => {
     const initial = createData();

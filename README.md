@@ -4,7 +4,7 @@ Une application personnelle pour les mémos, les photos et les fichiers, organis
 
 > Projet personnel développé rapidement à la demande de plusieurs personnes, avec une aide importante de l’IA pour le code, l’interface et la documentation. Il est indépendant de ma formation et de tout travail scolaire. Il ne représente pas une évaluation de mes compétences ou de mon apprentissage.
 
-[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.3.2/Notes_0.3.2_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.3.2/Notes_0.3.2_universal.dmg)
+[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.2/Notes_0.4.2_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.2/Notes_0.4.2_universal.dmg)
 
 ## Utilisation
 
@@ -34,6 +34,8 @@ Sur Windows, l’accès Google est renouvelé automatiquement. Dans le navigateu
 - Chiffrement local AES 256 GCM et synchronisation directe avec Google Drive.
 - Stockage local seul possible, avec avertissement sur l’absence de synchronisation.
 - Fusion automatique des modifications entre ordinateur et téléphone.
+- Messages affichés immédiatement, enregistrement local puis synchronisation en arrière-plan.
+- Sur Windows et macOS, fermeture après la fin des transferts ; avertissement avant de quitter le navigateur si nécessaire.
 - Mises à jour Windows signées et téléchargement direct proposé sur le site sous Windows.
 
 ## Hébergement et comptes
@@ -72,3 +74,7 @@ Le workflow macOS est déclenché manuellement et ne compile pas Windows. Les mi
 ### Compatibilité 0.4.0
 
 Les notes existantes sont conservées et leur format est automatiquement actualisé. Mettez les applications à jour sur tous vos ordinateurs pour continuer la synchronisation avec le site. Les anciennes versions ne peuvent pas modifier le nouveau format.
+
+### Version 0.4.2
+
+Les écritures locales n’attendent plus Google Drive. Les actions rapprochées sont regroupées pour l’envoi, avec une vérification toutes les cinq secondes lorsque Notes est visible. Les applications peuvent terminer un transfert fenêtre fermée, puis quitter. En cas d’échec, la fenêtre réapparaît et la copie locale est conservée. Sur le web, le navigateur peut demander confirmation avant de fermer ; les transferts restants reprennent à la prochaine ouverture. Les icônes du site, de Windows et de macOS utilisent un N centré. Le format des notes et les clés restent identiques à la version 0.4.0.

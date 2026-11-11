@@ -1,13 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Accès minimal pour la fenêtre locale de Notes.",
+  "description": "Acc\u00e8s minimal pour la fen\u00eatre locale de Notes.",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
     "updater:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-destroy"
   ]
 }

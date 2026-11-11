@@ -22,13 +22,21 @@ Les pièces jointes sont des objets chiffrés immuables nommés avec un UUID. Le
 
 La synchronisation compare la dernière base locale, l’état local et les têtes distantes. Elle fusionne les ajouts par UUID et les champs indépendants. Si le même champ est modifié des deux côtés, la date de modification puis une comparaison déterministe choisissent la valeur courante. Une suppression prime sur la modification du même élément ; un message nouvellement envoyé dans un salon supprimé simultanément restaure le salon pour conserver ce message. Les anciennes valeurs restent dans les instantanés historiques.
 
-Deux publications simultanées forment deux branches. Une publication de fusion référence leurs deux têtes. Les changements survenus pendant un transfert sont relus avant publication, et les véritables courses de publication sont fusionnées à la passe suivante. Les écritures locales attendent la fin d’une synchronisation puis réappliquent leur changement à la session courante.
+Deux publications simultanées forment deux branches. Une publication de fusion référence leurs deux têtes. Chaque transfert publie un instantané cohérent ; les modifications locales plus récentes restent en attente pour la passe suivante. Une vérification finale détecte les véritables courses de publication.
 
-Une vérification a lieu toutes les cinq secondes quand la page est visible, au retour sur la page, au retour du réseau et après un enregistrement. Un brouillon ou une pièce jointe encore dans le composeur, une édition de message ou une fenêtre ouverte suspend temporairement la synchronisation. Il ne s’agit pas d’une connexion temps réel au serveur.
+Les envois, éditions, épingles et suppressions s’affichent immédiatement. Une file ordonnée les chiffre et les enregistre dans IndexedDB, indépendamment du réseau. Une erreur locale conserve les actions dans l’interface avec possibilité de réessayer ou d’annuler ; les actions suivantes attendent pour conserver leur ordre. Les téléchargements cloud se préparent hors de cette file. Leur activation atomique fusionne avec les dernières modifications locales et conserve les pièces jointes du composeur, sans remplacer ni verrouiller la session active.
+
+Les envois Drive sont regroupés après environ 1,2 seconde d’inactivité. Une vérification a aussi lieu toutes les cinq secondes quand la page est visible, au retour sur la page et au retour du réseau. Écrire un brouillon ou modifier un message ne suspend plus la synchronisation. Les imports et la configuration initiale suspendent les passes automatiques. Il ne s’agit pas d’une connexion temps réel au serveur.
 
 Les pièces jointes importées sont authentifiées et écrites une par une dans un espace temporaire IndexedDB. Le manifeste ne remplace la copie courante qu’après validation complète et vérification de sa révision. Une interruption conserve la copie précédente ; si la fusion a déjà été activée avant une erreur réseau, la nouvelle session reste accessible. Les fichiers déjà présents et inchangés sont réutilisés.
 
 La limite Notes inclut l’historique et la configuration cloud. Chaque envoi vérifie séparément cette limite et le quota réel Google. L’historique n’est pas purgé automatiquement, y compris après suppression d’un message. L’espace navigateur et le disque constituent aussi des limites indépendantes.
+
+## Fermeture avec modifications en attente
+
+Sur Windows et macOS, fermer la fenêtre ou quitter depuis le menu masque la fenêtre pendant l’enregistrement local et la synchronisation, puis termine l’application. Les sorties explicites après synchronisation et les redémarrages de mise à jour restent possibles. La fenêtre réapparaît si le réseau, l’autorisation ou le quota empêche la fin des transferts, ou après quatre minutes d’attente. L’utilisateur peut réessayer, rester dans Notes ou quitter explicitement avec l’avertissement correspondant. Aucun service permanent, démarrage automatique ou serveur supplémentaire n’est installé.
+
+Dans le navigateur, `beforeunload` demande une confirmation tant qu’un enregistrement local ou un transfert Drive reste en attente. Le navigateur choisit le texte et peut ignorer cet avertissement, notamment sur mobile. Un onglet fermé ne garantit pas la poursuite des transferts ; la copie locale déjà enregistrée reprend à la prochaine ouverture. Un arrêt forcé du système ou de l’application ne garantit pas non plus la fin des transferts natifs.
 
 ## Sauvegardes
 

@@ -47,5 +47,5 @@ export function writeSyncState(state: SyncState | null): void {
 }
 export function markDirty(): void {
   const state = readSyncState();
-  if (state) writeSyncState({ ...state, dirty: true });
+  writeSyncState(state ? { ...state, dirty: true } : {provider: "google", head: null, dirty: true});
 }

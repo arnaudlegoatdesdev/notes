@@ -1,3 +1,4 @@
+import { mergeVault } from '../merge';
 import { isSpaceImage } from './space-image';
 import type { Attachment, EncryptedBundle, VaultData } from './types';
 
@@ -23,6 +24,9 @@ export type VaultSecret = string | Uint8Array;
 export interface VaultSession {
   readonly data: VaultData;
   save(data: VaultData): Promise<void>;
+  update(change: (data: VaultData) => VaultData): Promise<void>;
+  snapshot(): Promise<{data: VaultData; manifest: Uint8Array; revision: string}>;
+  mergeRemote(base: VaultData, remote: VaultData, load: (attachment: Attachment) => Promise<Uint8Array>): Promise<void>;
   addFile(file: File): Promise<Attachment>;
   readFile(attachment: Attachment): Promise<Blob>;
   removeFile(id: string): Promise<void>;
@@ -197,7 +201,7 @@ async function stageObject(key: string, bytes: Uint8Array): Promise<void> {
   } catch (error) { throw storageFailure(error); }
   finally { db.close(); }
 }
-async function activateStagedVault(expected: string | undefined, manifest: Uint8Array, fileSizes: Record<string, number>, fileKeys: Record<string, string>): Promise<string> {
+async function activateStagedVault(expected: string | undefined, manifest: Uint8Array, fileSizes: Record<string, number>, fileKeys: Record<string, string>, guard: () => void = () => {}): Promise<string> {
   const db = await database();
   try {
     const tx = db.transaction(['state', 'files'], 'readwrite'); const done = completion(tx);
@@ -206,9 +210,11 @@ async function activateStagedVault(expected: string | undefined, manifest: Uint8
     const req = stateStore.get('vault');
     req.onsuccess = () => {
       const current = req.result as StoredState | undefined;
+      try { guard(); } catch (error) { failure = error; tx.abort(); return; }
       if (current?.revision !== expected) { failure = conflict(); tx.abort(); return; }
       const keys = fileStore.getAllKeys();
       keys.onsuccess = () => {
+        try { guard(); } catch (error) { failure = error; tx.abort(); return; }
         const existing = new Set(keys.result);
         const wanted = new Set(Object.values(fileKeys));
         if ([...wanted].some(key => !existing.has(key))) { failure = new Error('Le téléchargement a été interrompu dans un autre onglet. Votre coffre précédent est conservé.'); tx.abort(); return; }
@@ -490,21 +496,85 @@ function session(initialData: VaultData, initialKey: CryptoKey, salt: Uint8Array
     check(expectedEpoch);
     revision = nextRevision;
   }
+  function persist(change: (data: VaultData) => VaultData): Promise<void> {
+    return enqueue(async () => {
+      const current = active();
+      const snapshot = structuredClone(change(structuredClone(current.data)));
+      validateData(snapshot);
+      if (snapshot.id !== current.data.id || snapshot.createdAt !== current.data.createdAt) throw new Error('L’identité du coffre ne peut pas être modifiée.');
+      const state = await storage(current.epoch);
+      ensureReferenceSizes(snapshot, state.fileSizes);
+      const manifest = await encryptManifest(snapshot, current.key, salt); check(current.epoch);
+      quotaSizes(snapshot, manifest, state.fileSizes);
+      await commit(manifest, state.fileSizes, {}, current.epoch);
+      data = snapshot;
+    });
+  }
   return {
     get data() { return structuredClone(active().data); },
     save(nextData) {
-      // Copy synchronously before callers can mutate the argument while crypto is running.
       const snapshot = structuredClone(nextData);
+      return persist(() => snapshot);
+    },
+    update(change) { return persist(change); },
+    snapshot() {
       return enqueue(async () => {
-        const current = active(); validateData(snapshot);
-        if (snapshot.id !== current.data.id || snapshot.createdAt !== current.data.createdAt) throw new Error('L’identité du coffre ne peut pas être modifiée.');
-        const state = await storage(current.epoch);
-        ensureReferenceSizes(snapshot, state.fileSizes);
-        const manifest = await encryptManifest(snapshot, current.key, salt); check(current.epoch);
-        quotaSizes(snapshot, manifest, state.fileSizes);
-        await commit(manifest, state.fileSizes, {}, current.epoch);
-        data = snapshot;
+        const current = active(), state = await storage(current.epoch);
+        return {data: structuredClone(current.data), manifest: copy(state.manifest), revision};
       });
+    },
+    async mergeRemote(base, remote, load) {
+      const before = structuredClone(base), incoming = structuredClone(remote);
+      validateData(incoming);
+      const start = active();
+      if (incoming.id !== start.data.id || incoming.createdAt !== start.data.createdAt) throw new Error('Ces notes appartiennent à un autre coffre.');
+      const staged = new Map<string, {key: string; size: number}>();
+      const namespace = `merge:${crypto.randomUUID()}:`;
+      const keep = new Set<string>();
+      class MissingRemoteFile extends Error {}
+      try {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const state = await readState(); check(start.epoch);
+          for (const item of references(incoming).values()) {
+            if ((state?.fileSizes[item.id] === item.storedSize && item.storedSize === item.size + 36) || staged.has(item.id)) continue;
+            const bytes = await load(structuredClone(item)); check(start.epoch);
+            if (!(bytes instanceof Uint8Array) || bytes.byteLength !== item.storedSize) throw new Error('Pièce jointe distante incomplète.');
+            const plaintext = await decryptFile(bytes, item.id, start.key); check(start.epoch);
+            if (plaintext.byteLength !== item.size) throw new Error('Pièce jointe distante endommagée.');
+            const objectKey = namespace + item.id;
+            staged.set(item.id, {key: objectKey, size: bytes.byteLength});
+            await stageObject(objectKey, copy(bytes)); check(start.epoch);
+          }
+          try {
+            await enqueue(async () => {
+              check(start.epoch);
+              const current = active(), state = await storage(current.epoch);
+              const merged = mergeVault(before, current.data, incoming);
+              validateData(merged);
+              // Preserve local draft files while incoming files are downloaded outside this queue.
+              const sizes = {...state.fileSizes};
+              const keys = Object.fromEntries(Object.keys(sizes).map(id => [id, physicalKey(state, id)]));
+              const used = new Set<string>();
+              const mergedFiles = references(merged);
+              for (const id of references(current.data).keys()) if (!mergedFiles.has(id)) { delete sizes[id]; delete keys[id]; }
+              for (const item of mergedFiles.values()) {
+                if (sizes[item.id] === item.storedSize) continue;
+                const downloaded = staged.get(item.id);
+                if (!downloaded) throw new MissingRemoteFile();
+                sizes[item.id] = downloaded.size; keys[item.id] = downloaded.key; used.add(downloaded.key);
+              }
+              const manifest = await encryptManifest(merged, current.key, salt); check(current.epoch);
+              quotaSizes(merged, manifest, sizes);
+              revision = await activateStagedVault(revision, manifest, sizes, keys, () => check(current.epoch));
+              data = merged;
+              for (const key of used) keep.add(key);
+            });
+            return;
+          } catch (error) { if (!(error instanceof MissingRemoteFile) || attempt === 2) throw error; }
+        }
+      } finally {
+        await removeObjects([...staged.values()].map(item => item.key).filter(key => !keep.has(key))).catch(() => undefined);
+      }
     },
     addFile(file) {
       return enqueue(async () => {

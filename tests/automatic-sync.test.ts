@@ -30,6 +30,7 @@ import {
 } from "../src/sync-v2";
 import { mergeVault, stampChanges } from "../src/merge";
 import { packSession, unpackBundle } from "../src/archive";
+import {markDirty} from "../src/sync-state";
 const owner = "google-person-a";
 class Drive implements CloudConnection {
   provider = "google" as const;
@@ -195,6 +196,90 @@ describe("passwordless account access", () => {
   });
 });
 describe("concurrent PC and phone updates", () => {
+  it("keeps rapid writes and photo preparation independent of an in-flight upload", async () => {
+    const {session, key, cloud} = await setup();
+    const image = await session.addFile(new File(["photo"], "photo.png", {type: "image/png"}));
+    const first = {...note(session.data, "Photo à supprimer"), attachments: [image]};
+    await session.update(d => ({...d, messages: [...d.messages, first]}));
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(r => {entered = r;}), gate = new Promise<void>(r => {release = r;});
+    cloud.afterCreate = async name => {if (name.startsWith("blob-")) {entered(); await gate;}};
+    const uploading = syncVault(cloud, session, key, owner);
+    await waiting;
+    // The cloud is stalled here. Every operation below must complete anyway.
+    const nextImage = await session.addFile(new File(["autre photo"], "autre.png", {type: "image/png"}));
+    const next = {...note(session.data, "Photo conservée"), attachments: [nextImage]};
+    await session.update(d => stampChanges(d, {...d, messages: [next]}));
+    await session.removeFile(image.id);
+    for (let i = 0; i < 10; i++) await session.update(d => ({...d, messages: [...d.messages, note(d, `Note ${i}`)]}));
+    expect(session.data.messages).toHaveLength(11);
+    expect(await (await session.readFile(nextImage)).text()).toBe("autre photo");
+    release();
+    const result = await uploading;
+    expect(result.session).toBe(session);
+    expect(result.pending).toBe(true);
+    expect(readSyncState()?.dirty).toBe(true);
+    cloud.afterCreate = undefined;
+    await syncVault(cloud, session, key, owner);
+    expect(readSyncState()?.dirty).toBe(false);
+    const head = findHeads(await cloud.list())[0];
+    const published = await inspectManifest(key, await cloud.read(head.file.id));
+    expect(published.messages.map(m => m.text)).toEqual(session.data.messages.map(m => m.text));
+    expect(published.messages.some(m => m.id === first.id)).toBe(false);
+    const create = vi.spyOn(cloud, "create");
+    await syncVault(cloud, session, key, owner);
+    expect(create).not.toHaveBeenCalled();
+  });
+  it("rebases a slow remote photo download onto new local edits and preserves unsent draft files", async () => {
+    const {session, key, cloud, root} = await setup();
+    const original = note(session.data, "À supprimer pendant le téléchargement");
+    await session.update(d => ({...d, messages: [original]}));
+    await syncVault(cloud, session, key, owner);
+    const head = findHeads(await cloud.list())[0].id;
+    const base = session.data;
+    const image = await session.addFile(new File(["photo distante"], "mobile.png", {type: "image/png"}));
+    const remote = structuredClone(base);
+    remote.messages.push({...note(remote, "Depuis le téléphone"), attachments: [image]});
+    await session.save(remote);
+    const bytes = await session.readEncryptedFile(image.id);
+    await session.save(base);
+    await session.removeFile(image.id);
+    const blob = cloud.add(`blob-${image.id}.flion`, bytes);
+    cloud.add(`n-${crypto.randomUUID()}--${head}.notes`, await sealManifest(key, remote));
+    let entered!: () => void, release!: () => void;
+    const waiting = new Promise<void>(r => {entered = r;}), gate = new Promise<void>(r => {release = r;});
+    const read = cloud.read.bind(cloud);
+    vi.spyOn(cloud, "read").mockImplementation(async id => {if (id === blob) {entered(); await gate;} return read(id);});
+    const downloading = syncVault(cloud, session, key, owner);
+    await waiting;
+    const draft = await session.addFile(new File(["brouillon local"], "draft.txt"));
+    await session.update(d => stampChanges(d, {...d, messages: [note(d, "Écrit pendant le téléchargement")]}));
+    release();
+    const merged = await downloading;
+    expect(merged.session).toBe(session);
+    expect(session.data.messages.map(m => m.text).sort()).toEqual(["Depuis le téléphone", "Écrit pendant le téléchargement"]);
+    expect(await (await session.readFile(draft)).text()).toBe("brouillon local");
+    expect(await (await session.readFile(image)).text()).toBe("photo distante");
+    expect(readSyncState()?.dirty).toBe(true);
+    await session.update(d => ({...d, messages: [...d.messages, {...note(d, "Brouillon envoyé"), attachments: [draft]}]}));
+    await syncVault(cloud, session, key, owner);
+    expect(readSyncState()?.dirty).toBe(false);
+    expect(findHeads(await cloud.list())[0].parents).not.toContain(root);
+  });
+  it("retains a durable local note and a pending cloud state after an offline failure", async () => {
+    const {session, key, cloud} = await setup();
+    await session.update(d => ({...d, messages: [note(d, "Enregistré hors ligne")]}));
+    markDirty();
+    cloud.failList = true;
+    await expect(syncVault(cloud, session, key, owner)).rejects.toThrow("offline");
+    expect(readSyncState()?.dirty).toBe(true);
+    session.lock();
+    const reopened = await unlockVault(key);
+    expect(reopened.data.messages[0].text).toBe("Enregistré hors ligne");
+    cloud.failList = false;
+    await syncVault(cloud, reopened, key, owner);
+    expect(readSyncState()?.dirty).toBe(false);
+  });
   it("does not download unchanged metadata again on each poll", async () => {
     const { cloud, session, key } = await setup();
     const reads = vi.spyOn(cloud, "read");

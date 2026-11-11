@@ -229,14 +229,18 @@ export async function syncVault(
   original: VaultSession,
   secret: VaultSecret,
   owner: string,
+  onChange?: () => void,
 ) {
   let live = original;
+  let applied = false;
   try {
     return await performSync(conn, original, secret, owner, (value) => {
       live = value;
+      applied = true;
+      onChange?.();
     });
   } catch (error) {
-    if (live !== original) throw new SyncFailure(error, live);
+    if (applied) throw new SyncFailure(error, live);
     throw error;
   }
 }
@@ -253,171 +257,94 @@ async function performSync(
   cloudBytes: number;
   pending?: boolean;
 }> {
-  let session = original;
+  const session = original;
+  let changed = false;
+  const record = async (head: string, publishedHash: string, account: string, publishedData: VaultData) => {
+    const latest = await session.snapshot();
+    const localHash = await hash(latest.manifest);
+    const dirty = JSON.stringify(session.data) !== JSON.stringify(publishedData);
+    // Equivalent manifests have distinct random IVs after an in-place merge.
+    const manifestHash = dirty ? publishedHash : localHash;
+    writeSyncState({provider: conn.provider, accountKey: account, vaultId: latest.data.id, head, manifestHash, dirty});
+    return dirty;
+  };
   for (let attempt = 0; attempt < 5; attempt++) {
-    const revision = await session.storageRevision(),
-      localManifest = await session.exportManifest(),
-      local = session.data;
+    const snapshot = await session.snapshot();
+    const {revision, manifest: localManifest, data: local} = snapshot;
     assertVaultOwner(local, owner);
-    const localHash = await hash(localManifest),
-      account = await accountKey(conn),
-      state = readSyncState();
-    if (state?.accountKey && state.accountKey !== account)
-      throw new Error("Reconnectez le compte Drive d’origine.");
-    if (state?.vaultId && state.vaultId !== local.id)
-      throw new Error("La liaison Drive appartient à un autre espace.");
-    const files = await conn.list(),
-      graph = history(files),
-      heads = findHeads(files).slice(0, 3),
-      read = reader(conn, graph, secret, owner, local.id);
-    const cloudBytes = totalBytes(files);
-    if (!heads.length && state?.head)
-      throw new Error(
-        "Les notes ont été supprimées sur Drive. La copie locale est conservée.",
-      );
-    if (state?.head && !graph.has(state.head))
-      throw new Error(
-        "Un instantané manque sur Drive. La copie locale est conservée.",
-      );
+    const localHash = await hash(localManifest), account = await accountKey(conn), state = readSyncState();
+    if (state?.accountKey && state.accountKey !== account) throw new Error("Reconnectez le compte Drive d’origine.");
+    if (state?.vaultId && state.vaultId !== local.id) throw new Error("La liaison Drive appartient à un autre espace.");
+    const files = await conn.list(), graph = history(files), heads = findHeads(files).slice(0, 3);
+    const read = reader(conn, graph, secret, owner, local.id), cloudBytes = totalBytes(files);
+    if (!heads.length && state?.head) throw new Error("Les notes ont été supprimées sur Drive. La copie locale est conservée.");
+    if (state?.head && !graph.has(state.head)) throw new Error("Un instantané manque sur Drive. La copie locale est conservée.");
     const sameHead = heads.length === 1 && heads[0].id === state?.head;
     let merged = local;
     if (heads.length && !sameHead) {
       let remote = (await read(heads[0].id)).data;
       if (heads.length > 1) {
-        const base = (
-          await read(
-            commonAncestor(
-              graph,
-              heads.map((h) => h.id),
-            ),
-          )
-        ).data;
-        for (const head of heads.slice(1))
-          remote = mergeVault(base, remote, (await read(head.id)).data);
+        const base = (await read(commonAncestor(graph, heads.map((h) => h.id)))).data;
+        for (const head of heads.slice(1)) remote = mergeVault(base, remote, (await read(head.id)).data);
       }
-      if (state?.head)
-        merged = mergeVault((await read(state.head)).data, local, remote);
+      if (state?.head) merged = mergeVault((await read(state.head)).data, local, remote);
       else {
-        // Recover a missing local binding from the root snapshot.
         const roots = [...graph.values()].filter((v) => !v.parents.length);
-        if (roots.length !== 1)
-          throw new Error("Impossible de retrouver l’origine de ces notes.");
+        if (roots.length !== 1) throw new Error("Impossible de retrouver l’origine de ces notes.");
         merged = mergeVault((await read(roots[0].id)).data, local, remote);
       }
     }
-    const remoteSame = sameHead
-      ? state?.manifestHash === localHash
-      : heads.length === 1 &&
-        JSON.stringify((await read(heads[0].id)).data) ===
-          JSON.stringify(merged);
+    const remoteSame = sameHead ? state?.manifestHash === localHash : heads.length === 1 && JSON.stringify((await read(heads[0].id)).data) === JSON.stringify(merged);
     const localSame = JSON.stringify(merged) === JSON.stringify(local);
-    const manifest = localSame
-      ? localManifest
-      : await sealManifest(secret, merged, localManifest);
+    const manifest = localSame ? localManifest : await sealManifest(secret, merged, localManifest);
+    if (!localSame) {
+      // Network downloads happen outside local transactions. Rebase on the latest
+      // local edits at activation and keep the same live session and draft files.
+      await session.mergeRemote(local, merged, loader(conn, files, session));
+      changed = true;
+      onSession(session);
+    }
     const missing: Attachment[] = [];
     for (const item of refs(merged).values()) {
       const found = files.filter((f) => f.name === `blob-${item.id}.flion`);
-      if (found.length > 1 || (found[0] && found[0].size !== item.storedSize))
-        throw new Error(
-          "Une pièce jointe Drive est endommagée ou existe en double.",
-        );
+      if (found.length > 1 || (found[0] && found[0].size !== item.storedSize)) throw new Error("Une pièce jointe Drive est endommagée ou existe en double.");
       if (!found.length) missing.push(item);
     }
     if (remoteSame && localSame && !missing.length) {
-      if ((await session.storageRevision()) !== revision)
-        throw new Error("Un autre onglet a modifié les notes. Réessayez.");
-      writeSyncState({
-        provider: conn.provider,
-        accountKey: account,
-        vaultId: local.id,
-        head: heads[0].id,
-        manifestHash: localHash,
-        dirty: false,
-      });
-      return {
-        session,
-        quota: await conn.quota().catch(() => null),
-        changed: session !== original,
-        cloudBytes,
-      };
+      const quota = await conn.quota().catch(() => null);
+      const pending = await record(heads[0].id, localHash, account, local);
+      return {session, quota, changed, cloudBytes, pending};
     }
-    const required = missing.reduce(
-      (sum, item) => sum + item.storedSize,
-      remoteSame ? 0 : manifest.byteLength,
-    );
-    if (cloudBytes + required > merged.preferences.limitBytes)
-      throw new Error(
-        "La limite Notes est atteinte. Augmentez-la dans les paramètres.",
-      );
+    const required = missing.reduce((sum, item) => sum + item.storedSize, remoteSame ? 0 : manifest.byteLength);
+    if (cloudBytes + required > Math.min(merged.preferences.limitBytes, session.data.preferences.limitBytes)) throw new Error("La limite Notes est atteinte. Augmentez-la dans les paramètres.");
     const quota = await conn.quota();
-    if (quota?.total !== undefined && required > quota.total - quota.used)
-      throw new Error(
-        "Google Drive est plein. Vos modifications restent enregistrées en local.",
-      );
-    for (const item of missing)
-      await conn.create(
-        `blob-${item.id}.flion`,
-        await loader(conn, files, session)(item),
-      );
-    // A new head during upload is merged on the next iteration, without discarding local edits.
-    const fresh = findHeads(await conn.list())
-      .map((h) => h.id)
-      .join(",");
-    if (
-      fresh !==
-      findHeads(files)
-        .map((h) => h.id)
-        .join(",")
-    )
-      continue;
-    if ((await session.storageRevision()) !== revision)
-      throw new Error("Un autre onglet a modifié les notes. Réessayez.");
+    if (quota?.total !== undefined && required > quota.total - quota.used) throw new Error("Google Drive est plein. Vos modifications restent enregistrées en local.");
+    for (const item of missing) {
+      let ciphertext: Uint8Array;
+      try { ciphertext = await loader(conn, files, session)(item); }
+      catch (error) {
+        if ((await session.snapshot()).revision !== revision && !refs(session.data).has(item.id)) return {session, quota, changed, cloudBytes, pending: true};
+        throw error;
+      }
+      await conn.create(`blob-${item.id}.flion`, ciphertext);
+    }
+    const fresh = findHeads(await conn.list()).map((h) => h.id).join(",");
+    if (fresh !== findHeads(files).map((h) => h.id).join(",")) continue;
     let head = heads[0]?.id;
     if (!remoteSame) {
       head = crypto.randomUUID();
-      await conn.create(
-        `n-${head}--${heads.length ? heads.map((h) => h.id).join("--") : "root"}.notes`,
-        manifest,
-      );
+      await conn.create(`n-${head}--${heads.length ? heads.map((h) => h.id).join("--") : "root"}.notes`, manifest);
     }
-    if (!localSame) {
-      const previous = session;
-      session = await importVaultStream(
-        secret,
-        manifest,
-        loader(conn, files, previous),
-        revision,
-      );
-      onSession(session);
-      // The caller retains original until success; keep it valid if a later network request fails.
-    }
-    const committedHash = await hash(await session.exportManifest());
-    writeSyncState({
-      provider: conn.provider,
-      accountKey: account,
-      vaultId: local.id,
-      head: head!,
-      manifestHash: committedHash,
-      dirty: false,
-    });
+    // The baseline is the exact published snapshot, never a newer local write.
+    const publishedHash = await hash(manifest);
+    await record(head!, publishedHash, account, merged);
     const verified = findHeads(await conn.list()).map((h) => h.id);
     if (verified.length === 1 && verified[0] === head) {
-      if (session !== original) original.lock();
-      return {
-        session,
-        quota: await conn.quota().catch(() => quota),
-        changed: session !== original,
-        cloudBytes: totalBytes(await conn.list()),
-      };
+      const latestQuota = await conn.quota().catch(() => quota);
+      const size = totalBytes(await conn.list());
+      const pending = await record(head!, publishedHash, account, merged);
+      return {session, quota: latestQuota, changed, cloudBytes: size, pending};
     }
-    // An actual simultaneous publish forms a fork; the next pass creates its merge commit.
   }
-  // Always return the live imported session even while another device is busy publishing.
-  return {
-    session,
-    quota: null,
-    changed: session !== original,
-    cloudBytes: totalBytes(await conn.list()),
-    pending: true,
-  };
+  return {session, quota: null, changed, cloudBytes: totalBytes(await conn.list()), pending: true};
 }
