@@ -2,13 +2,23 @@ name: macOS
 
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner Mac (alternative si la file habituelle est occupée)
+        type: choice
+        options: [macos-latest, macos-15-intel]
+        default: macos-latest
+      source_ref:
+        description: Révision exacte à compiler (vide pour la branche sélectionnée)
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
     timeout-minutes: 45
     env:
       VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
@@ -21,6 +31,8 @@ jobs:
       APPLE_SIGNING_IDENTITY: '-'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24'
