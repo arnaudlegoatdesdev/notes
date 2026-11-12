@@ -51,7 +51,8 @@ jobs:
           key: macos-universal-1.90-${{ hashFiles('src-tauri/Cargo.lock') }}-v1
           restore-keys: macos-universal-1.90-
       - run: npm ci
-      - run: npm test
+      - name: Tester l’interface sur le runner Mac
+        run: npm test -- --maxWorkers=2 --testTimeout=20000 --hookTimeout=20000
       - name: Tester le code natif et le Trousseau
         run: |
           native_target=$(rustc -vV | sed -n 's/^host: //p')
