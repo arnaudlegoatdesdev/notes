@@ -1,4 +1,5 @@
 import { bytesBody, cloudFetch, TokenConnection } from "./http";
+import {googlePicture} from "../google-picture";
 import {
   CloudError,
   validateName,
@@ -165,7 +166,7 @@ export async function authorizeGoogle(
 
 export async function readGoogleIdentity(
   accessToken: string,
-): Promise<{ id: string; email: string; name: string }> {
+): Promise<import("../auth").GoogleUser> {
   const response = await cloudFetch(
     "https://openidconnect.googleapis.com/v1/userinfo",
     { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -190,6 +191,7 @@ export async function readGoogleIdentity(
       typeof profile.name === "string" && profile.name
         ? profile.name
         : profile.email,
+    ...(googlePicture(profile.picture) ? {picture: googlePicture(profile.picture)} : {}),
   };
 }
 

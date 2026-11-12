@@ -5,9 +5,9 @@ use tauri::Manager;
 static SESSION_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct GoogleProfile { pub id: String, pub email: String, pub name: String }
+pub struct GoogleProfile { pub id: String, pub email: String, pub name: String, #[serde(default, skip_serializing_if = "Option::is_none")] pub picture: Option<String> }
 #[derive(Deserialize)]
-struct UserInfo { sub: String, email: String, email_verified: bool, name: Option<String> }
+struct UserInfo { sub: String, email: String, email_verified: bool, name: Option<String>, picture: Option<String> }
 #[derive(Serialize, Deserialize)]
 struct StoredSession {
     version: u8, user: GoogleProfile, client_id: String,
@@ -22,12 +22,31 @@ pub(crate) fn session_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map(|dir| dir.join("google-session.bin")).map_err(|_| "Le stockage de connexion est indisponible.".into())
 }
 fn valid_user(user: &GoogleProfile) -> bool { !user.id.is_empty() && user.id.len() <= 255 && !user.email.is_empty() && user.email.len() <= 1024 && !user.name.is_empty() && user.name.len() <= 4096 }
+fn valid_picture(value: &str) -> bool {
+    if value.len() > 4096 { return false; }
+    url::Url::parse(value).ok().is_some_and(|u| u.scheme() == "https" && u.username().is_empty() && u.password().is_none() && u.port().is_none() && u.host_str().is_some_and(|h| h == "googleusercontent.com" || h.ends_with(".googleusercontent.com")))
+}
+#[tauri::command]
+pub async fn native_google_profile(app: tauri::AppHandle, subject: String) -> Result<Option<GoogleProfile>, String> {
+    let path = session_path(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = SESSION_LOCK.lock().map_err(|_| "La connexion est occupée.".to_string())?;
+        let Some(mut saved) = load(&path)? else { return Ok(None); };
+        if saved.user.id != subject { return Err("Le compte Google a changé.".into()); }
+        if saved.user.picture.is_some() || credentials(&saved).is_none() { return Ok(Some(saved.user)); }
+        let client = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(10)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Profil Google indisponible.".to_string())?;
+        let user = read_google_user(&client, &saved.access_token)?;
+        if user.id != subject { return Err("Le compte Google a changé.".into()); }
+        saved.user = user.clone(); store(&path, &saved)?;
+        Ok(Some(user))
+    }).await.map_err(|_| "Profil Google indisponible.".to_string())?
+}
 pub(crate) fn read_google_user(client: &reqwest::blocking::Client, token: &str) -> Result<GoogleProfile, String> {
     let response = client.get("https://openidconnect.googleapis.com/v1/userinfo").bearer_auth(token).send().map_err(|_| "Google ne répond pas. Vos notes locales restent disponibles.".to_string())?;
     if !response.status().is_success() { return Err("Google n’a pas confirmé l’identité de ce compte.".into()); }
     let profile: UserInfo = response.json().map_err(|_| "L’identité Google est invalide.".to_string())?;
     if !profile.email_verified { return Err("Google n’a pas confirmé l’identité de ce compte.".into()); }
-    let user = GoogleProfile { id: profile.sub, name: profile.name.filter(|v| !v.is_empty()).unwrap_or_else(|| profile.email.clone()), email: profile.email };
+    let user = GoogleProfile { id: profile.sub, name: profile.name.filter(|v| !v.is_empty()).unwrap_or_else(|| profile.email.clone()), email: profile.email, picture: profile.picture.filter(|v| valid_picture(v)) };
     if !valid_user(&user) { return Err("L’identité Google est invalide.".into()); }
     Ok(user)
 }
@@ -157,7 +176,18 @@ fn unprotect(_: &[u8]) -> Result<Vec<u8>, String> { Err("Le stockage de connexio
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn fixture() -> StoredSession { StoredSession { version: 1, user: GoogleProfile { id: "person-a".into(), email: "a@example.com".into(), name: "Person".into() }, client_id: "client".into(), access_token: "short-lived-token".into(), refresh_token: Some("private-renewal-token".into()), scope: Some("openid".into()), expires_at: now() + 3600 } }
+    fn fixture() -> StoredSession { StoredSession { version: 1, user: GoogleProfile { id: "person-a".into(), email: "a@example.com".into(), name: "Person".into(), picture: None }, client_id: "client".into(), access_token: "short-lived-token".into(), refresh_token: Some("private-renewal-token".into()), scope: Some("openid".into()), expires_at: now() + 3600 } }
+    #[test]
+    fn photos_are_optional_for_old_logins_and_only_google_urls_are_accepted() {
+        let old: GoogleProfile = serde_json::from_str(r#"{"id":"person","email":"p@example.com","name":"Person"}"#).unwrap();
+        assert!(old.picture.is_none());
+        assert!(valid_picture("https://lh3.googleusercontent.com/a/photo"));
+        assert!(!valid_picture("https://googleusercontent.com.evil.example/photo"));
+        assert!(!valid_picture("http://lh3.googleusercontent.com/photo"));
+        let mut saved = fixture(); saved.user.picture = Some("https://lh3.googleusercontent.com/a/photo".into());
+        let loaded = decode_session(serde_json::to_vec(&saved).unwrap()).unwrap().unwrap();
+        assert_eq!(credentials(&loaded).unwrap().user.unwrap().picture, saved.user.picture);
+    }
     #[test]
     fn expired_access_token_keeps_the_account_but_is_not_reused() { let mut s = fixture(); assert!(credentials(&s).is_some()); s.expires_at = now().saturating_sub(1); assert!(credentials(&s).is_none()); assert_eq!(s.user.id, "person-a"); }
     #[cfg(windows)]
@@ -173,7 +203,7 @@ mod tests {
     fn wrong_drive_account_cannot_replace_the_remembered_login() {
         let dir = std::env::temp_dir().join(format!("notes-account-test-{}", crate::oauth::test_random_id())); fs::create_dir_all(&dir).unwrap(); let path = dir.join("session.bin");
         store(&path, &fixture()).unwrap(); let before = fs::read(&path).unwrap();
-        let other = GoogleProfile { id: "person-b".into(), email: "b@example.com".into(), name: "Other".into() };
+        let other = GoogleProfile { id: "person-b".into(), email: "b@example.com".into(), name: "Other".into(), picture: None };
         assert!(save_authorization(&path, other, "client".into(), "new-token".into(), 3600, Some("openid".into()), Some("other-renewal".into()), Some("person-a")).is_err());
         assert_eq!(fs::read(&path).unwrap(), before); assert_eq!(load(&path).unwrap().unwrap().user.id, "person-a"); fs::remove_dir_all(dir).unwrap();
     }

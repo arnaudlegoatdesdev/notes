@@ -1,5 +1,5 @@
 import "fake-indexeddb/auto";
-import { clearWebLogin } from "../src/session-storage";
+import { clearWebLogin, readWebLogin, saveWebLogin } from "../src/session-storage";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   authorizeGoogle,
@@ -7,7 +7,7 @@ import {
   forgetGoogleGrant,
   driveGrant,
 } from "../src/cloud/google";
-import { signInGoogle, assertVaultOwner } from "../src/auth";
+import { signInGoogle, assertVaultOwner, refreshGoogleProfile } from "../src/auth";
 import {
   availableCloudBytes,
   validateLimit,
@@ -47,6 +47,18 @@ function fakeIdentity(scope?: string) {
   return start;
 }
 describe("Google identity independent from Drive", () => {
+  it("recovers a missing profile photo for an existing login without requesting Drive or opening OAuth", async () => {
+    const user={id:"person",email:"person@example.com",name:"Person"};
+    await saveWebLogin(user,{accessToken:"cached-token",expiresIn:3600});
+    const picture="https://lh3.googleusercontent.com/a/photo";
+    const fetcher=vi.fn().mockResolvedValue(json({sub:user.id,email:user.email,email_verified:true,name:user.name,picture}));
+    vi.stubGlobal("fetch",fetcher);
+    expect((await refreshGoogleProfile(user)).picture).toBe(picture);
+    expect((await readWebLogin())?.user.picture).toBe(picture);
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0][0]).toBe("https://openidconnect.googleapis.com/v1/userinfo");
+    expect((await readWebLogin())?.credentials?.accessToken).toBe("cached-token");
+  });
   it("authenticates through Google userinfo without requesting Drive or calling Drive APIs", async () => {
     const start = fakeIdentity();
     const fetcher = vi.fn().mockResolvedValue(

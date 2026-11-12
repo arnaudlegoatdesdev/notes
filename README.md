@@ -4,7 +4,7 @@ Une application personnelle pour les mémos, les photos et les fichiers, organis
 
 > Projet personnel développé rapidement à la demande de plusieurs personnes, avec une aide importante de l’IA pour le code, l’interface et la documentation. Il est indépendant de ma formation et de tout travail scolaire. Il ne représente pas une évaluation de mes compétences ou de mon apprentissage.
 
-[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.2/Notes_0.4.2_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.2/Notes_0.4.2_universal.dmg)
+[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.3/Notes_0.4.3_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.3/Notes_0.4.3_universal.dmg)
 
 ## Utilisation
 
@@ -24,6 +24,9 @@ Sur Windows, l’accès Google est renouvelé automatiquement. Dans le navigateu
 
 - Salons personnalisables, messages modifiables et supprimables.
 - Fichiers, aperçus d’images, zoom, recherche et épingles.
+- Dépôt de fichiers dans le chat pour les envoyer directement, en conservant le brouillon.
+- Zoom fluide au curseur, déplacement dans l’image et pincement tactile.
+- Photo du compte Google dans le profil et les messages, initiales personnelles en remplacement.
 - Aperçus Markdown et texte défilants et repliables dans le fil.
 - Salons réorganisables par glisser-déposer, au clavier ou sur mobile.
 - Messages rapprochés regroupés visuellement et zone de saisie qui grandit avec le texte.
@@ -78,3 +81,7 @@ Les notes existantes sont conservées et leur format est automatiquement actuali
 ### Version 0.4.2
 
 Les écritures locales n’attendent plus Google Drive. Les actions rapprochées sont regroupées pour l’envoi, avec une vérification toutes les cinq secondes lorsque Notes est visible. Les applications peuvent terminer un transfert fenêtre fermée, puis quitter. En cas d’échec, la fenêtre réapparaît et la copie locale est conservée. Sur le web, le navigateur peut demander confirmation avant de fermer ; les transferts restants reprennent à la prochaine ouverture. Les icônes du site, de Windows et de macOS utilisent un N centré. Le format des notes et les clés restent identiques à la version 0.4.0.
+
+### Version 0.4.3
+
+Le dépôt de fichiers dans le chat envoie un nouveau message sans consommer le brouillon. Le zoom des images suit le point visé avec une animation fluide et prend en charge le pincement. Le profil utilise la photo Google, mémorisée avec la connexion. Les anciens comptes tentent de récupérer leur photo sans imposer une déconnexion ; les initiales sont utilisées si Google n’est pas accessible. Aucun changement du format des notes ni des clés.

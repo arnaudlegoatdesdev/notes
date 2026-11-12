@@ -3,6 +3,7 @@ import {
   nativeAuthorize,
   nativeCachedSession,
   nativeClearSession,
+  nativeRefreshGoogle,
 } from "./desktop";
 import {
   authorizeGoogle,
@@ -15,12 +16,31 @@ import {
   readWebLogin,
   clearWebLogin,
   validateUser,
+  updateWebProfile,
 } from "./session-storage";
 import type { VaultData } from "./core/types";
 export interface GoogleUser {
   id: string;
   email: string;
   name: string;
+  picture?: string;
+}
+export async function refreshGoogleProfile(user: GoogleUser): Promise<GoogleUser> {
+  if (isDesktop) {
+    const token = await nativeRefreshGoogle(user.id).catch(() => null);
+    if (token?.user?.id === user.id && token.user.picture) return validateUser(token.user);
+    const {invoke} = await import("@tauri-apps/api/core");
+    // Refresh only the profile with the cached access token; never open OAuth.
+    const profile = await invoke<GoogleUser | null>("native_google_profile", {subject: user.id});
+    return profile?.id === user.id ? validateUser(profile) : user;
+  }
+  const saved = await readWebLogin();
+  if (saved?.user.id !== user.id || !saved.credentials) return user;
+  if (saved.user.picture) return saved.user;
+  const profile = await readGoogleIdentity(saved.credentials.accessToken);
+  if (profile.id !== user.id) return user;
+  await updateWebProfile(profile);
+  return profile;
 }
 export async function signInGoogle(): Promise<GoogleUser> {
   const clientId = isDesktop

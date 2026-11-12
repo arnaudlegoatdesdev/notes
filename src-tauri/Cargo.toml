@@ -1,6 +1,6 @@
 [package]
 name = "notes"
-version = "0.4.2"
+version = "0.4.3"
 description = "Un espace personnel chiffré, organisé en salons"
 authors = ["Notes contributors"]
 edition = "2021"

@@ -1,5 +1,6 @@
 import type { GoogleUser } from "./auth";
 import type { GoogleCredentials } from "./cloud/google";
+import {googlePicture} from "./google-picture";
 export interface SavedLogin {
   version: 1;
   user: GoogleUser;
@@ -44,7 +45,13 @@ export function validateUser(value: unknown): GoogleUser {
     u.name.length > 1024
   )
     throw new Error("Session Notes invalide.");
-  return { id: u.id, email: u.email, name: u.name };
+  const picture = googlePicture(u.picture);
+  return { id: u.id, email: u.email, name: u.name, ...(picture ? {picture} : {}) };
+}
+export async function updateWebProfile(user: GoogleUser): Promise<void> {
+  const expected = generation, current = await readWebLogin();
+  if (generation !== expected || current?.user.id !== user.id) return;
+  await saveWebLogin(user, current.credentials);
 }
 async function encryptionKey(db: IDBDatabase): Promise<CryptoKey> {
   const found = await request<CryptoKey | undefined>(

@@ -7,7 +7,7 @@ import {
   prepareGoogleIdentity,
   readGoogleIdentity,
 } from "./google";
-import { updateWebCredentials } from "../session-storage";
+import { updateWebCredentials, updateWebProfile } from "../session-storage";
 import { CloudError, type CloudConnection, type CloudProvider } from "./types";
 export { CloudError } from "./types";
 export type {
@@ -73,6 +73,7 @@ export async function connectCloud(
         "Choisissez le même compte Google que pour la connexion à Notes.",
         "auth",
       );
+    if (!isDesktop) await updateWebProfile(identity);
   }
   if (expectedSubject) {
     rememberGoogleGrant(credentials, expectedSubject);

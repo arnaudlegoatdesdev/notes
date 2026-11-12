@@ -1,4 +1,4 @@
-export const APP_VERSION = "0.4.2";
+export const APP_VERSION = "0.4.3";
 export interface WindowsDownload {
   version: string;
   url: string;

@@ -107,6 +107,8 @@ import TextAttachment from "./components/TextAttachment";
 import { textPreviewKind } from "./text-preview";
 import AttachmentImage from "./components/AttachmentImage";
 import ImageViewer from "./components/ImageViewer";
+import ProfileAvatar from "./components/ProfileAvatar";
+import {useChatFileDrop, readNativeDroppedFile} from "./file-drop";
 import VaultSetup, { type VaultOptions } from "./components/VaultSetup";
 import GoogleMark from "./components/GoogleMark";
 import PlatformIcon from "./components/PlatformIcon";
@@ -137,6 +139,7 @@ import {
   signOutGoogle,
   assertVaultOwner,
   type GoogleUser,
+  refreshGoogleProfile,
 } from "./auth";
 import { availableCloudBytes, formatBytes, validateLimit, GB } from "./quota";
 
@@ -282,6 +285,8 @@ export default function App() {
   const localDone = useRef<Promise<void> | null>(null);
   const lastSyncError = useRef<Error | null>(null);
   const [identity, setIdentity] = useState<GoogleUser | null>(null);
+  const profileRefresh = useRef(new Set<string>());
+
   const [active, setActive] = useState("");
   const [activeSpace, setActiveSpace] = useState("");
   const [channelDragging, setChannelDragging] = useState(false);
@@ -304,6 +309,7 @@ export default function App() {
     [cloudBytes, setCloudBytes] = useState(0),
     [quota, setQuota] = useState<CloudQuota | null>(null);
   const [connection, setConnection] = useState<CloudConnection | null>(null);
+
   const [syncStatus, setSyncStatus] = useState<
     "local" | "pending" | "syncing" | "synced" | "error"
   >("local");
@@ -311,6 +317,17 @@ export default function App() {
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState("");
   useEffect(() => handleNativeLinks(setNotice), []);
+  useEffect(() => {
+    if (!identity || identity.picture || busy) return;
+    const attempt = `${identity.id}:${connection ? "drive" : "initial"}`;
+    if (profileRefresh.current.has(attempt)) return;
+    profileRefresh.current.add(attempt);
+    let canceled = false;
+    void refreshGoogleProfile(identity).then(profile => {
+      if (!canceled) setIdentity(current => current?.id === profile.id ? profile : current);
+    }).catch(() => undefined);
+    return () => {canceled = true;};
+  }, [identity?.id, connection, busy]);
   const [localPending, setLocalPending] = useState(0);
   const [closeError, setCloseError] = useState<string | null>(null);
   const closeRetry = useRef<(() => Promise<void>) | null>(null);
@@ -776,6 +793,39 @@ export default function App() {
       if (input.current) input.current.value = "";
     });
   };
+  const dropTarget = useRef<HTMLElement>(null);
+  const sendDropped = (items: (File | string)[]) => {
+    if (!channel || !session.current || busyRef.current || !items.length) return;
+    if (items.length > 100) {setNotice("100 fichiers maximum par dépôt."); return;}
+    const destination = channel, destinationSpace = space, currentSession = session.current;
+    void run(async () => {
+      const added: Attachment[] = [];
+      let enqueued = false;
+      try {
+        if (items.some(item => typeof item !== "string" && item.size > 25 * 1024 ** 2)) throw new Error("25 Mio maximum par fichier.");
+        for (const item of items) {
+          const file = typeof item === "string" ? await readNativeDroppedFile(item) : item;
+          added.push(await currentSession.addFile(file));
+        }
+        const message: Message = {id: crypto.randomUUID(), channelId: destination.id, text: "", createdAt: new Date().toISOString(), attachments: added, pinned: false};
+        changes.current?.add("Envoyer les fichiers", current => {
+          if (current.messages.some(m => m.id === message.id)) return current;
+          return {...current,
+            spaces: spacesOf(current).some(s => s.id === destinationSpace.id) ? current.spaces : [...spacesOf(current), destinationSpace],
+            channels: current.channels.some(c => c.id === destination.id) ? current.channels : [...current.channels, destination],
+            messages: [...current.messages, message]};
+        });
+        enqueued = true;
+        setView("messages"); setQuery("");
+        await changes.current?.flush();
+      } catch (error) {
+        if (!enqueued) for (const item of added) await currentSession.removeFile(item.id).catch(() => undefined);
+        throw error;
+      } finally {setUsed(await currentSession.usedBytes());}
+    });
+  };
+  const droppingFiles = useChatFileDrop({target: dropTarget, enabled: mode === "vault" && !!channel && !busy && !modal && !confirm && !gallery,
+    files: sendDropped, paths: sendDropped, error: setNotice});
   const removeQueued = (a: Attachment) =>
     void run(async () => {
       if (session.current) await session.current.removeFile(a.id);
@@ -1167,7 +1217,7 @@ export default function App() {
           >
             <Settings size={21} />
           </button>
-          <div className="profile-mini">M</div>
+          <div className="profile-mini"><ProfileAvatar user={identity}/></div>
         </div>
       </nav>
       {drawer && (
@@ -1264,7 +1314,7 @@ export default function App() {
           </div>
           <button className="user-card" onClick={() => setModal("settings")}>
             <div className="avatar">
-              M<span />
+              <ProfileAvatar user={identity}/><span className="online-dot" />
             </div>
             <div>
               <strong>{identity.name}</strong>
@@ -1277,7 +1327,8 @@ export default function App() {
           </button>
         </div>
       </aside>
-      <main className="main">
+      <main ref={dropTarget} className={`main ${droppingFiles ? "file-drop-active" : ""}`}>
+        {droppingFiles && <div className="file-drop-overlay" role="status"><div><Paperclip size={38}/><strong>Envoyer dans #{channel?.name}</strong><span>Relâchez vos fichiers</span></div></div>}
         <header className="topbar">
           <div className="channel-heading">
             <button
@@ -1542,7 +1593,7 @@ export default function App() {
                         {compact ? <time className="message-inline-time" dateTime={m.createdAt}
                           title={new Date(m.createdAt).toLocaleString("fr-FR")} aria-label={`Envoyé à ${time(m.createdAt)}`}>
                           {time(m.createdAt)}
-                        </time> : <div className="message-avatar" aria-hidden="true">M</div>}
+                        </time> : <div className="message-avatar" aria-hidden="true"><ProfileAvatar user={identity}/></div>}
                         <div className="message-body">
                           {(!compact || m.updatedAt || m.pinned) && <div className="message-meta">
                             {!compact && <><strong>Moi</strong>

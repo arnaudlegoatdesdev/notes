@@ -571,7 +571,7 @@ input[type="file"] {
   font-size: 0.78rem;
   flex-shrink: 0;
 }
-.avatar > span {
+.avatar > .online-dot {
   position: absolute;
   width: 8px;
   height: 8px;
@@ -2413,7 +2413,8 @@ input[type="file"] {
   color: #b4b8bf;
 }
 .viewer-stage {
-  overflow: auto;
+  overflow: hidden;
+  position: relative;
   flex: 1;
   min-height: 0;
   touch-action: none;
@@ -2421,13 +2422,13 @@ input[type="file"] {
   scrollbar-width: thin;
   scrollbar-color: #555 transparent;
 }
-.viewer-canvas {
-  display: grid;
-  place-items: center;
-  min-width: 100%;
-  min-height: 100%;
-}
-.viewer-canvas > img {
+.viewer-image {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  transform-origin: center;
+  will-change: transform;
   object-fit: contain;
   max-width: none;
   max-height: none;
@@ -2439,8 +2440,8 @@ input[type="file"] {
 .viewer-stage.zoomed img {
   cursor: grab;
 }
-.viewer-stage.zoomed:active,
-.viewer-stage.zoomed:active img {
+.viewer-stage.dragging,
+.viewer-stage.dragging img {
   cursor: grabbing;
 }
 @media (max-width: 760px) {
@@ -2781,3 +2782,14 @@ input[type="file"] {
 .link-preview-content img { display: block; margin-top: 12px; width: 100%; max-height: 240px; object-fit: contain; object-position: left; border-radius: 5px; background: var(--rail); }
 .link-preview.simple .link-preview-content > strong { font-size: .78rem; font-weight: 500; }
 @media (max-width: 760px) { .link-preview-header { padding-left: 10px; padding-right: 9px; }.link-preview-content { padding: 0 10px 11px; } }
+
+.profile-picture { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
+.profile-initials { color: inherit; font: inherit; line-height: 1; }
+.main { position: relative; }
+.file-drop-overlay { position: absolute; inset: 10px; z-index: 40; display: grid; place-items: center; border: 2px dashed var(--accent); border-radius: 16px; background: color-mix(in srgb, var(--bg) 90%, transparent); color: var(--text); pointer-events: none; animation: file-drop-enter .16s ease-out; }
+.file-drop-overlay > div { display: flex; flex-direction: column; align-items: center; gap: 15px; padding: 28px; text-align: center; }
+.file-drop-overlay svg { color: var(--accent); }
+.file-drop-overlay strong { font-size: 1.15rem; font-weight: 600; }
+.file-drop-overlay span { color: var(--muted); font-size: .86rem; }
+@keyframes file-drop-enter { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .file-drop-overlay { animation: none; } }

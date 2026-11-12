@@ -60,6 +60,12 @@ La signature ad hoc permet la validation du paquet ; elle ne vaut pas notarisati
 
 ## Liens et aperçus
 
+Le lecteur d’images conserve la taille de mise en page de l’image et anime uniquement sa transformation. Le point sous le curseur ou le milieu du pincement reste l’ancrage du zoom, avec un déplacement borné aux bords de l’image. Une préférence de réduction des animations est respectée.
+
+Le dépôt web utilise les fichiers fournis par le navigateur. Les applications écoutent les événements de dépôt Tauri et transmettent les contenus binaires au frontend. Le noyau accepte uniquement les chemins enregistrés par un véritable dépôt système, une seule lecture par chemin, sans permission générale de lecture du disque. Les dossiers et les fichiers de plus de 25 Mio sont refusés. Le chiffrement local et la file d’enregistrement sont les mêmes que pour le sélecteur de fichiers. Un dépôt crée son propre message et conserve le brouillon et les pièces jointes qui s’y trouvent déjà.
+
+La photo facultative fournie par Google UserInfo est conservée avec la session chiffrée. Un profil existant sans photo peut être complété en arrière-plan avec son autorisation Google habituelle, sans demander de nouvel accès Drive. Les images du profil sont limitées aux hôtes HTTPS Google `googleusercontent.com`, sans transmettre de referrer ; une erreur d’image utilise les initiales du nom. La photo ne fait pas partie du coffre de notes.
+
 Le document intercepte les clics sur les liens HTTP, HTTPS et mailto dans l’application native et appelle `open_external`. Le noyau valide le schéma et lance le navigateur ou le gestionnaire système. Les téléchargements de fichiers et liens blob restent gérés par le client.
 
 Les aperçus n’utilisent aucun serveur Notes. Le noyau lit uniquement des pages HTML et images publiques, avec taille, durée et redirections bornées. Chaque destination DNS est vérifiée et ses adresses sont épinglées à la connexion pour empêcher les requêtes vers le réseau privé. Les cookies, jetons et identifiants de proxy ne sont pas transmis. Le web utilise fetch avec CORS, sans credentials ni referrer, puis une carte simple si la lecture est bloquée.

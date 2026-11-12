@@ -89,6 +89,45 @@ async function login() {
   );
 }
 describe("Notes account and empty workspace flow", () => {
+  it("sends dropped files immediately without consuming the draft and shows the Google picture", async () => {
+    const initial = createData(); initial.owner = {provider:"google",subject:user.id};
+    initial.channels.push({id:crypto.randomUUID(),spaceId:initial.id,name:"Personnel",description:"",icon:"hash"});
+    const record = makeAccess(user.id, initial.id); await saveAccess(record); await createVault(keyBytes(record), initial);
+    rememberStorage(user.id, "local");
+    const picture = "https://lh3.googleusercontent.com/a/test-photo";
+    vi.mocked(restoreGoogleSession).mockResolvedValue({...user, name:"Sophie Martin", picture});
+    const {container} = render(<App/>);
+    const composer = await screen.findByRole("textbox",{name:"Écrire dans Personnel"});
+    await waitFor(() => expect((screen.getByRole("button",{name:"Ajouter un fichier"}) as HTMLButtonElement).disabled).toBe(false));
+    expect(container.querySelector('.user-card .profile-picture')?.getAttribute('src')).toBe(picture);
+    expect(container.querySelector('.profile-mini .profile-picture')?.getAttribute('src')).toBe(picture);
+    fireEvent.change(composer,{target:{value:"Mon brouillon reste ici"}});
+    const makeFile = (text: string, name: string) => {
+      const file = new File([text],name,{type:"text/plain"});
+      Object.defineProperty(file,"arrayBuffer",{value:async()=>new TextEncoder().encode(text).buffer}); return file;
+    };
+    const files = [makeFile("premier","premier.txt"),makeFile("second","second.txt")];
+    const transfer = {types:["Files"],files,items:[],dropEffect:"none"};
+    const conversation = screen.getByRole("region",{name:"Messages"});
+    fireEvent.dragEnter(conversation,{dataTransfer:transfer});
+    expect(screen.getByText("Relâchez vos fichiers")).toBeTruthy();
+    fireEvent.drop(conversation,{dataTransfer:transfer});
+    await waitFor(async () => {
+      const saved = await inspectManifest(keyBytes(record),(await localManifest())!);
+      expect(saved.messages).toHaveLength(1);
+      expect(saved.messages[0].attachments.map(a=>a.name)).toEqual(["premier.txt","second.txt"]);
+    });
+    expect((composer as HTMLTextAreaElement).value).toBe("Mon brouillon reste ici");
+    expect(screen.queryByText("Relâchez vos fichiers")).toBeNull();
+    expect(container.querySelector('.message-avatar .profile-picture')?.getAttribute('src')).toBe(picture);
+    const oversized = makeFile("small","gros.bin"); Object.defineProperty(oversized,"size",{value:26*1024**2});
+    await waitFor(() => expect((screen.getByRole("button",{name:"Ajouter un fichier"}) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.drop(conversation,{dataTransfer:{...transfer,files:[oversized]}});
+    await screen.findByText("25 Mio maximum par fichier.");
+    expect((await inspectManifest(keyBytes(record),(await localManifest())!)).messages).toHaveLength(1);
+    fireEvent.drop(document.body,{dataTransfer:transfer});
+    expect((await inspectManifest(keyBytes(record),(await localManifest())!)).messages).toHaveLength(1);
+  });
   it("still warns about unsent Drive changes when its Google authorization must be renewed", async () => {
     const data = createData();
     data.owner = {provider: "google", subject: user.id};
