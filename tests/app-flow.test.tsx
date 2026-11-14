@@ -89,6 +89,34 @@ async function login() {
   );
 }
 describe("Notes account and empty workspace flow", () => {
+  it("attaches a pasted image without losing the draft, sends it once, and leaves text paste alone", async () => {
+    const initial=createData(); initial.owner={provider:"google",subject:user.id};
+    initial.channels.push({id:crypto.randomUUID(),spaceId:initial.id,name:"Personnel",description:"",icon:"hash"});
+    const record=makeAccess(user.id,initial.id); await saveAccess(record); await createVault(keyBytes(record),initial);
+    rememberStorage(user.id,"local"); vi.mocked(restoreGoogleSession).mockResolvedValue(user);
+    render(<App/>);
+    const composer=await screen.findByRole("textbox",{name:"Écrire dans Personnel"});
+    await waitFor(()=>expect((screen.getByRole("button",{name:"Ajouter un fichier"}) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(composer,{target:{value:"Avec ma capture"}});
+    const image=new File(["image"],"capture.png",{type:"image/png"});
+    Object.defineProperty(image,"arrayBuffer",{value:async()=>new TextEncoder().encode("image").buffer});
+    expect(fireEvent.paste(composer,{clipboardData:{items:[{kind:"file",type:"image/png",getAsFile:()=>image}],files:[image]}})).toBe(false);
+    await screen.findByRole("button",{name:"Retirer capture.png"});
+    expect((composer as HTMLTextAreaElement).value).toBe("Avec ma capture");
+    expect((await inspectManifest(keyBytes(record),(await localManifest())!)).messages).toHaveLength(0);
+    await waitFor(()=>expect((screen.getByRole("button",{name:"Envoyer le message"}) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button",{name:"Envoyer le message"}));
+    await waitFor(async()=>{
+      const saved=await inspectManifest(keyBytes(record),(await localManifest())!);
+      expect(saved.messages).toHaveLength(1); expect(saved.messages[0].text).toBe("Avec ma capture");
+      expect(saved.messages[0].attachments.map(a=>a.name)).toEqual(["capture.png"]);
+    });
+    expect(fireEvent.paste(composer,{clipboardData:{items:[{kind:"string",type:"text/plain"}],files:[]}})).toBe(true);
+    const large=new File(["x"],"trop.png",{type:"image/png"}); Object.defineProperty(large,"size",{value:26*1024**2});
+    fireEvent.paste(composer,{clipboardData:{items:[],files:[large]}});
+    await screen.findByText("25 Mio maximum par fichier.");
+    expect(screen.queryByRole("button",{name:"Retirer trop.png"})).toBeNull();
+  });
   it("sends dropped files immediately without consuming the draft and shows the Google picture", async () => {
     const initial = createData(); initial.owner = {provider:"google",subject:user.id};
     initial.channels.push({id:crypto.randomUUID(),spaceId:initial.id,name:"Personnel",description:"",icon:"hash"});

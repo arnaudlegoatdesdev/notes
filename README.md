@@ -4,7 +4,7 @@ Une application personnelle pour les mémos, les photos et les fichiers, organis
 
 > Projet personnel développé rapidement à la demande de plusieurs personnes, avec une aide importante de l’IA pour le code, l’interface et la documentation. Il est indépendant de ma formation et de tout travail scolaire. Il ne représente pas une évaluation de mes compétences ou de mon apprentissage.
 
-[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.3/Notes_0.4.3_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.3/Notes_0.4.3_universal.dmg)
+[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.4/Notes_0.4.4_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.4/Notes_0.4.4_universal.dmg)
 
 ## Utilisation
 
@@ -85,3 +85,7 @@ Les écritures locales n’attendent plus Google Drive. Les actions rapprochées
 ### Version 0.4.3
 
 Le dépôt de fichiers dans le chat envoie un nouveau message sans consommer le brouillon. Le zoom des images suit le point visé avec une animation fluide et prend en charge le pincement. Le profil utilise la photo Google, mémorisée avec la connexion. Les anciens comptes tentent de récupérer leur photo sans imposer une déconnexion ; les initiales sont utilisées si Google n’est pas accessible. Aucun changement du format des notes ni des clés.
+
+### Version 0.4.4
+
+Collez une image dans la zone de saisie avec Ctrl + V ou Cmd + V. Elle est ajoutée aux pièces jointes du message, sans effacer le texte déjà saisi. Envoyez ensuite le message normalement. Le collage de texte reste inchangé.

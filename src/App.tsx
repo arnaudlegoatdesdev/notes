@@ -109,6 +109,7 @@ import AttachmentImage from "./components/AttachmentImage";
 import ImageViewer from "./components/ImageViewer";
 import ProfileAvatar from "./components/ProfileAvatar";
 import {useChatFileDrop, readNativeDroppedFile} from "./file-drop";
+import {clipboardImages} from "./clipboard-images";
 import VaultSetup, { type VaultOptions } from "./components/VaultSetup";
 import GoogleMark from "./components/GoogleMark";
 import PlatformIcon from "./components/PlatformIcon";
@@ -777,9 +778,10 @@ export default function App() {
     setMenu(null);
     setModal(null);
   };
-  const upload = (files: FileList | null) => {
+  const upload = (files: FileList | File[] | null) => {
     if (!channel || !files?.length) return;
     void run(async () => {
+      if (Array.from(files).some(file => file.size > 25 * 1024 ** 2)) throw new Error("25 Mio maximum par fichier.");
       const added: Attachment[] = [];
       for (const file of Array.from(files)) {
         if (file.size > 25 * 1024 ** 2)
@@ -834,7 +836,7 @@ export default function App() {
     });
   const send = (e?: FormEvent) => {
     e?.preventDefault();
-    if (!channel || (!draft.trim() && !queued.length)) return;
+    if (busyRef.current || !channel || (!draft.trim() && !queued.length)) return;
     const message: Message = {id: crypto.randomUUID(), channelId: channel.id, text: draft.trim(), createdAt: new Date().toISOString(), attachments: queued, pinned: false};
     setDraft("");
     setQueued([]);
@@ -1783,7 +1785,13 @@ export default function App() {
           <div ref={end} />
         </section>
         {!!channel && (
-          <div className="composer-wrap">
+          <div className="composer-wrap" onPaste={event => {
+            const images = clipboardImages(event.clipboardData);
+            if (!images.length) return;
+            event.preventDefault();
+            if (busyRef.current) {setNotice("Attendez la préparation des fichiers."); return;}
+            upload(images);
+          }}>
             {queued.length > 0 && (
               <div className="queued-files">
                 {queued.map((a) => (
