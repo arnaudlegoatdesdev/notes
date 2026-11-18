@@ -154,9 +154,13 @@ describe("Notes account and empty workspace flow", () => {
     expect(screen.queryByRole("button", {name:"Retirer second.txt"})).toBeNull();
     fireEvent.click(screen.getByText("Personnel"));
     expect((screen.getByRole("textbox", {name:"Écrire dans Personnel"}) as HTMLTextAreaElement).value).toBe("Mon brouillon reste ici");
-    fireEvent.click(screen.getByRole("button", {name:"Retirer second.txt"}));
+    const remove = screen.getByRole<HTMLButtonElement>("button", {name:"Retirer second.txt"});
+    await waitFor(() => expect(remove.disabled).toBe(false));
+    fireEvent.click(remove);
     await screen.findByText("13 pièces jointes");
-    fireEvent.click(screen.getByRole("button", {name:"Envoyer le message"}));
+    const send = screen.getByRole<HTMLButtonElement>("button", {name:"Envoyer le message"});
+    await waitFor(() => expect(send.disabled).toBe(false));
+    fireEvent.click(send);
     await waitFor(async () => {
       const saved = await inspectManifest(keyBytes(record),(await localManifest())!);
       expect(saved.messages).toHaveLength(1);
