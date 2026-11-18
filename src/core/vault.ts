@@ -1,6 +1,7 @@
 import { mergeVault } from '../merge';
 import { isSpaceImage } from './space-image';
 import type { Attachment, EncryptedBundle, VaultData } from './types';
+import { transferAttachments } from '../attachment-transfers';
 
 const DB_NAME = 'notes-vault-v2';
 let accountScope = '';
@@ -13,6 +14,7 @@ const IV_BYTES = 12;
 const ITERATIONS = 600_000;
 export const MIN_PASSPHRASE_LENGTH = 8;
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+export const MAX_ATTACHMENTS_PER_MESSAGE = 100;
 const MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
 const MAX_FILE_COUNT = 10_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -272,7 +274,7 @@ function validateData(value: unknown): asserts value is VaultData {
   const messageIds = new Set<string>();
   const attachments = new Map<string, string>();
   for (const message of value.messages) {
-    if (!isRecord(message) || !uuid(message.id) || messageIds.has(message.id) || !channelIds.has(String(message.channelId)) || !text(message.text, 1_000_000) || !timestamp(message.createdAt) || (message.updatedAt !== undefined && !timestamp(message.updatedAt)) || !Array.isArray(message.attachments) || message.attachments.length > 100 || typeof message.pinned !== 'boolean') invalid();
+    if (!isRecord(message) || !uuid(message.id) || messageIds.has(message.id) || !channelIds.has(String(message.channelId)) || !text(message.text, 1_000_000) || !timestamp(message.createdAt) || (message.updatedAt !== undefined && !timestamp(message.updatedAt)) || !Array.isArray(message.attachments) || message.attachments.length > MAX_ATTACHMENTS_PER_MESSAGE || typeof message.pinned !== 'boolean') invalid();
     if (message.changedAt !== undefined && !timestamp(message.changedAt)) invalid();
     if (message.linkPreviews !== undefined) {
       if (!Array.isArray(message.linkPreviews) || message.linkPreviews.length > 3) invalid();
@@ -535,8 +537,9 @@ function session(initialData: VaultData, initialKey: CryptoKey, salt: Uint8Array
       try {
         for (let attempt = 0; attempt < 3; attempt++) {
           const state = await readState(); check(start.epoch);
-          for (const item of references(incoming).values()) {
-            if ((state?.fileSizes[item.id] === item.storedSize && item.storedSize === item.size + 36) || staged.has(item.id)) continue;
+          const missing = [...references(incoming).values()].filter(item =>
+            state?.fileSizes[item.id] !== item.storedSize && !staged.has(item.id));
+          await transferAttachments(missing, async item => {
             const bytes = await load(structuredClone(item)); check(start.epoch);
             if (!(bytes instanceof Uint8Array) || bytes.byteLength !== item.storedSize) throw new Error('Pièce jointe distante incomplète.');
             const plaintext = await decryptFile(bytes, item.id, start.key); check(start.epoch);
@@ -544,7 +547,7 @@ function session(initialData: VaultData, initialKey: CryptoKey, salt: Uint8Array
             const objectKey = namespace + item.id;
             staged.set(item.id, {key: objectKey, size: bytes.byteLength});
             await stageObject(objectKey, copy(bytes)); check(start.epoch);
-          }
+          });
           try {
             await enqueue(async () => {
               check(start.epoch);

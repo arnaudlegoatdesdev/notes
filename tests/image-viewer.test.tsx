@@ -18,7 +18,10 @@ beforeEach(() => {
 afterEach(() => {cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();});
 function viewer() {
   const onClose = vi.fn();
-  const {container, unmount} = render(<ImageViewer url="blob:test" name="photo.png" onClose={onClose}/>);
+  const onDownload = vi.fn();
+  const {container, unmount} = render(<ImageViewer url="blob:test" name="photo.png" onClose={onClose} onDownload={onDownload}/>);
+  fireEvent.click(screen.getByRole("button", {name:"Télécharger l’image"}));
+  expect(onDownload).toHaveBeenCalledOnce();
   const image = screen.getByAltText("photo.png");
   Object.defineProperties(image, {naturalWidth:{value:2000},naturalHeight:{value:1200}});
   fireEvent.load(image);

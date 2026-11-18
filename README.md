@@ -4,7 +4,7 @@ Une application personnelle pour les mémos, les photos et les fichiers, organis
 
 > Projet personnel développé rapidement à la demande de plusieurs personnes, avec une aide importante de l’IA pour le code, l’interface et la documentation. Il est indépendant de ma formation et de tout travail scolaire. Il ne représente pas une évaluation de mes compétences ou de mon apprentissage.
 
-[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.4/Notes_0.4.4_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.4/Notes_0.4.4_universal.dmg)
+[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.5/Notes_0.4.5_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.5/Notes_0.4.5_universal.dmg)
 
 ## Utilisation
 
@@ -24,7 +24,7 @@ Sur Windows, l’accès Google est renouvelé automatiquement. Dans le navigateu
 
 - Salons personnalisables, messages modifiables et supprimables.
 - Fichiers, aperçus d’images, zoom, recherche et épingles.
-- Dépôt de fichiers dans le chat pour les envoyer directement, en conservant le brouillon.
+- Ajout de pièces jointes au brouillon par sélection, dépôt ou collage d’images.
 - Zoom fluide au curseur, déplacement dans l’image et pincement tactile.
 - Photo du compte Google dans le profil et les messages, initiales personnelles en remplacement.
 - Aperçus Markdown et texte défilants et repliables dans le fil.
@@ -89,3 +89,7 @@ Le dépôt de fichiers dans le chat envoie un nouveau message sans consommer le 
 ### Version 0.4.4
 
 Collez une image dans la zone de saisie avec Ctrl + V ou Cmd + V. Elle est ajoutée aux pièces jointes du message, sans effacer le texte déjà saisi. Envoyez ensuite le message normalement. Le collage de texte reste inchangé.
+
+### Version 0.4.5
+
+Les fichiers déposés rejoignent le brouillon. Vous pouvez ajouter ou retirer des fichiers, écrire une note, puis envoyer le tout ensemble. Plusieurs sélections peuvent alimenter le même brouillon, jusqu’à 100 pièces jointes par message et 25 Mio par fichier. Notes affiche la progression de la préparation et de l’envoi sur Drive. Un message indique que le téléchargement a démarré sur le web ou que le fichier a été enregistré dans l’application de bureau. Les champs de saisie mobile évitent le zoom automatique et les boutons du composeur sont plus grands. L’icône N et les thèmes principaux adoptent le bleu ardoise.

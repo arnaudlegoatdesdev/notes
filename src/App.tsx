@@ -71,6 +71,8 @@ import {
   hasVault,
   importVault,
   clearLocalVault,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_FILE_BYTES,
   type VaultSession,
   inspectManifest,
   localManifest,
@@ -110,6 +112,8 @@ import ImageViewer from "./components/ImageViewer";
 import ProfileAvatar from "./components/ProfileAvatar";
 import {useChatFileDrop, readNativeDroppedFile} from "./file-drop";
 import {clipboardImages} from "./clipboard-images";
+import { saveAttachment } from "./attachment-download";
+import { useMobileViewport } from "./mobile-viewport";
 import VaultSetup, { type VaultOptions } from "./components/VaultSetup";
 import GoogleMark from "./components/GoogleMark";
 import PlatformIcon from "./components/PlatformIcon";
@@ -173,20 +177,16 @@ const day = (at: string) => {
         });
 };
 const themes: { id: Theme; name: string; color: string; bg: string }[] = [
-  { id: "onyx", name: "Onyx", color: "#b7c6aa", bg: "#000000" },
-  { id: "slate", name: "Ardoise", color: "#b5c5a7", bg: "#202227" },
-  { id: "light", name: "Clair", color: "#526849", bg: "#f7f7f4" },
+  { id: "onyx", name: "Onyx", color: "#b7c9e8", bg: "#000000" },
+  { id: "slate", name: "Ardoise", color: "#b7c9e8", bg: "#1e222a" },
+  { id: "light", name: "Clair", color: "#405a82", bg: "#fafbfd" },
   { id: "forest", name: "Forêt", color: "#b2caa3", bg: "#17241f" },
   { id: "sand", name: "Sable", color: "#896b43", bg: "#efe7dc" },
   { id: "plum", name: "Prune", color: "#d6b9de", bg: "#28212e" },
 ];
 function Brand({ small = false }: { small?: boolean }) {
   return (
-    <span className={`brandmark ${small ? "small" : ""}`} aria-hidden="true">
-      <svg viewBox="0 0 32 32">
-        <path d="M7 25V7h5l8 11V7h5v18h-5l-8-11v11z" fill="currentColor" />
-      </svg>
-    </span>
+    <img className={`brandmark ${small ? "small" : ""}`} src={`${import.meta.env.BASE_URL}favicon.svg?v=0.4.5`} alt="" />
   );
 }
 function ProviderIcon({ provider: _provider }: { provider: Provider }) {
@@ -276,6 +276,7 @@ function Text({ text }: { text: string }) {
 }
 
 export default function App() {
+  useMobileViewport();
   const [data, setData] = useState<VaultData>(createData);
   const [mode, setMode] = useState<"login" | "setup" | "vault" | "loading">(
     "loading",
@@ -296,8 +297,9 @@ export default function App() {
   const [drawer, setDrawer] = useState(false),
     [query, setQuery] = useState(""),
     [draft, setDraft] = useState("");
-  const [queued, setQueued] = useState<Attachment[]>([]);
-  const composers = useRef(new Map<string, { text: string; files: Attachment[] }>());
+  const [queuedByChannel, setQueuedByChannel] = useState<Record<string, Attachment[]>>({});
+  const [preparingFiles, setPreparingFiles] = useState<{ done: number; total: number } | null>(null);
+  const composers = useRef(new Map<string, string>());
   const previewQueue = useRef(new Map<string, Map<string, LinkPreview>>());
   const [previewRevision, setPreviewRevision] = useState(0);
   const queuePreview = useCallback((id: string, preview: LinkPreview) => {
@@ -314,6 +316,7 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<
     "local" | "pending" | "syncing" | "synced" | "error"
   >("local");
+  const [syncProgress, setSyncProgress] = useState<{ done: number; total: number } | null>(null);
   const [syncError, setSyncError] = useState(""),
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState("");
@@ -410,7 +413,7 @@ export default function App() {
         .catch(() => undefined);
     }
   }, []);
-  const [gallery, setGallery] = useState<{ url: string; name: string } | null>(
+  const [gallery, setGallery] = useState<{ url: string; attachment: Attachment } | null>(
     null,
   );
   const end = useRef<HTMLDivElement>(null),
@@ -425,6 +428,7 @@ export default function App() {
   const spaceChannels = channelsInSpace(data, space.id);
   const spaceChannelIds = new Set(spaceChannels.map((c) => c.id));
   const channel = spaceChannels.find((c) => c.id === active) || spaceChannels[0];
+  const queued = queuedByChannel[channel?.id] || [];
   const ChannelIcon = icons[channel?.icon || "hash"];
   const percent = Math.min(
     100,
@@ -456,7 +460,7 @@ export default function App() {
     setMode("vault");
     setActiveSpace(spacesOf(s.data)[0].id);
     setActive(s.data.channels[0]?.id || "");
-    setQueued([]);
+    setQueuedByChannel({});
     setDraft("");
   };
   useEffect(() => {
@@ -597,7 +601,7 @@ export default function App() {
       if (changed) await commit({...current, messages});
     }), 600);
     return () => clearTimeout(timer);
-  }, [previewRevision, mode, busy, data, modal, confirm, editing, draft, queued, channelDragging, syncStatus]);
+  }, [previewRevision, mode, busy, data, modal, confirm, editing, draft, queuedByChannel, channelDragging, syncStatus]);
   const synchronize = useCallback(
     async (conn = connection, force = false) => {
       if (
@@ -626,6 +630,7 @@ export default function App() {
           keyBytes(access.current),
           identity.id,
           () => changes.current?.refresh(),
+          (done, total) => setSyncProgress(total ? { done, total } : null),
         );
         if (cloudConnection.current !== conn) return;
         session.current = result.session;
@@ -648,6 +653,7 @@ export default function App() {
           e instanceof Error ? e.message : "Synchronisation indisponible.",
         );
       } finally {
+        setSyncProgress(null);
         syncLock.current = false;
         syncDone.current = null;
         resolveSync();
@@ -660,19 +666,7 @@ export default function App() {
       const t = setTimeout(() => void synchronize(), 1200);
       return () => clearTimeout(t);
     }
-  }, [
-    connection,
-    syncStatus,
-    busy,
-    channelDragging,
-    data,
-    synchronize,
-    modal,
-    confirm,
-    editing,
-    draft,
-    queued,
-  ]);
+  }, [connection, syncStatus, busy, synchronize, modal]);
   useEffect(() => {
     if (!connection) return;
     const onFocus = () => {
@@ -738,7 +732,7 @@ export default function App() {
     void connection?.disconnect();
     setConnection(null);
     setData(createData());
-    setQueued([]);
+    setQueuedByChannel({});
     setDraft("");
     setQuery("");
     setEditing(null);
@@ -752,11 +746,10 @@ export default function App() {
     setMode("login");
   };
   const switchComposer = (id: string) => {
-    if (channel) composers.current.set(channel.id, { text: draft, files: queued });
+    if (channel) composers.current.set(channel.id, draft);
     const saved = composers.current.get(id);
     composers.current.delete(id);
-    setDraft(saved?.text || "");
-    setQueued(saved?.files || []);
+    setDraft(saved || "");
   };
   const choose = (id: string) => {
     setMenu(null);
@@ -778,60 +771,52 @@ export default function App() {
     setMenu(null);
     setModal(null);
   };
-  const upload = (files: FileList | File[] | null) => {
-    if (!channel || !files?.length) return;
+  const queueFiles = (items: (File | string)[], dropped = false) => {
+    const currentSession = session.current;
+    if (!channel || !currentSession || !items.length) return;
+    if (busyRef.current) { setNotice("Attendez la fin de l’opération en cours."); return; }
+    const destination = channel.id;
+    const available = MAX_ATTACHMENTS_PER_MESSAGE - queued.length;
+    if (items.length > available) {
+      setNotice(available > 0
+        ? `Il reste ${available} place(s) dans ce message. Sélectionnez au plus ${available} fichier(s).`
+        : `Ce message contient déjà ${MAX_ATTACHMENTS_PER_MESSAGE} pièces jointes.`);
+      return;
+    }
+    if (dropped) { setView("messages"); setQuery(""); }
     void run(async () => {
-      if (Array.from(files).some(file => file.size > 25 * 1024 ** 2)) throw new Error("25 Mio maximum par fichier.");
-      const added: Attachment[] = [];
-      for (const file of Array.from(files)) {
-        if (file.size > 25 * 1024 ** 2)
-          throw new Error("25 Mio maximum par fichier.");
-        if (!session.current) throw new Error("Le coffre est verrouillé.");
-        added.push(await session.current.addFile(file));
-        const justAdded = added.splice(0);
-        setQueued((q) => [...q, ...justAdded]);
+      let done = 0;
+      let skipped = 0;
+      let firstError = "";
+      setPreparingFiles({ done, total: items.length });
+      try {
+        for (const item of items) {
+          try {
+            const file = typeof item === "string" ? await readNativeDroppedFile(item) : item;
+            if (file.size > MAX_FILE_BYTES) throw new Error("25 Mio maximum par fichier.");
+            const added = await currentSession.addFile(file);
+            setQueuedByChannel((all) => ({ ...all, [destination]: [...(all[destination] || []), added] }));
+          } catch (error) {
+            skipped++;
+            firstError ||= error instanceof Error ? error.message : typeof error === "string" ? error : "Impossible de préparer le fichier.";
+          }
+          setPreparingFiles({ done: ++done, total: items.length });
+        }
+        if (skipped) setNotice(items.length === 1 ? firstError :
+          `${skipped} ${skipped === 1 ? "fichier ignoré" : "fichiers ignorés"}. ${firstError}`);
+      } finally {
+        setPreparingFiles(null);
+        setUsed(await currentSession.usedBytes());
       }
-      if (session.current) setUsed(await session.current.usedBytes());
-      if (input.current) input.current.value = "";
     });
   };
   const dropTarget = useRef<HTMLElement>(null);
-  const sendDropped = (items: (File | string)[]) => {
-    if (!channel || !session.current || busyRef.current || !items.length) return;
-    if (items.length > 100) {setNotice("100 fichiers maximum par dépôt."); return;}
-    const destination = channel, destinationSpace = space, currentSession = session.current;
-    void run(async () => {
-      const added: Attachment[] = [];
-      let enqueued = false;
-      try {
-        if (items.some(item => typeof item !== "string" && item.size > 25 * 1024 ** 2)) throw new Error("25 Mio maximum par fichier.");
-        for (const item of items) {
-          const file = typeof item === "string" ? await readNativeDroppedFile(item) : item;
-          added.push(await currentSession.addFile(file));
-        }
-        const message: Message = {id: crypto.randomUUID(), channelId: destination.id, text: "", createdAt: new Date().toISOString(), attachments: added, pinned: false};
-        changes.current?.add("Envoyer les fichiers", current => {
-          if (current.messages.some(m => m.id === message.id)) return current;
-          return {...current,
-            spaces: spacesOf(current).some(s => s.id === destinationSpace.id) ? current.spaces : [...spacesOf(current), destinationSpace],
-            channels: current.channels.some(c => c.id === destination.id) ? current.channels : [...current.channels, destination],
-            messages: [...current.messages, message]};
-        });
-        enqueued = true;
-        setView("messages"); setQuery("");
-        await changes.current?.flush();
-      } catch (error) {
-        if (!enqueued) for (const item of added) await currentSession.removeFile(item.id).catch(() => undefined);
-        throw error;
-      } finally {setUsed(await currentSession.usedBytes());}
-    });
-  };
   const droppingFiles = useChatFileDrop({target: dropTarget, enabled: mode === "vault" && !!channel && !busy && !modal && !confirm && !gallery,
-    files: sendDropped, paths: sendDropped, error: setNotice});
-  const removeQueued = (a: Attachment) =>
+    files: files => queueFiles(files, true), paths: paths => queueFiles(paths, true), error: setNotice});
+  const removeQueued = (channelId: string, a: Attachment) =>
     void run(async () => {
       if (session.current) await session.current.removeFile(a.id);
-      setQueued((q) => q.filter((f) => f.id !== a.id));
+      setQueuedByChannel((all) => ({ ...all, [channelId]: (all[channelId] || []).filter((f) => f.id !== a.id) }));
       if (session.current) setUsed(await session.current.usedBytes());
     });
   const send = (e?: FormEvent) => {
@@ -839,7 +824,7 @@ export default function App() {
     if (busyRef.current || !channel || (!draft.trim() && !queued.length)) return;
     const message: Message = {id: crypto.randomUUID(), channelId: channel.id, text: draft.trim(), createdAt: new Date().toISOString(), attachments: queued, pinned: false};
     setDraft("");
-    setQueued([]);
+    setQueuedByChannel(({ [channel.id]: _sent, ...rest }) => rest);
     changes.current?.add("Envoyer le message", (current) => current.messages.some((m) => m.id === message.id) ? current : {...current, messages: [...current.messages, message]});
   };
   const removeMessage = (message: Message) => setConfirm({
@@ -861,18 +846,15 @@ export default function App() {
     void run(async () => {
       const blob = await getFile(a);
       if (!blob) throw new Error("Ce fichier n’est plus disponible.");
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = a.name;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      const result = await saveAttachment(blob, a.name);
+      if (result === "saved") setNotice(`Fichier enregistré · ${a.name}`);
+      if (result === "started") setNotice(`Téléchargement lancé · ${a.name}`);
     });
   const preview = (a: Attachment) =>
     void run(async () => {
       const blob = await getFile(a);
       if (!blob) throw new Error("Fichier indisponible.");
-      setGallery({ url: URL.createObjectURL(blob), name: a.name });
+      setGallery({ url: URL.createObjectURL(blob), attachment: a });
     });
   const exportBackup = () =>
     void run(async () => {
@@ -907,7 +889,7 @@ export default function App() {
   );
   const statusText =
     syncStatus === "syncing"
-      ? "Synchronisation"
+      ? syncProgress ? `Drive · ${syncProgress.done}/${syncProgress.total} fichiers` : "Synchronisation"
       : syncStatus === "synced"
         ? "À jour sur le cloud"
         : syncStatus === "pending"
@@ -1330,7 +1312,7 @@ export default function App() {
         </div>
       </aside>
       <main ref={dropTarget} className={`main ${droppingFiles ? "file-drop-active" : ""}`}>
-        {droppingFiles && <div className="file-drop-overlay" role="status"><div><Paperclip size={38}/><strong>Envoyer dans #{channel?.name}</strong><span>Relâchez vos fichiers</span></div></div>}
+        {droppingFiles && <div className="file-drop-overlay" role="status"><div><Paperclip size={38}/><strong>Joindre au brouillon dans #{channel?.name}</strong><span>Relâchez vos fichiers</span></div></div>}
         <header className="topbar">
           <div className="channel-heading">
             <button
@@ -1462,7 +1444,7 @@ export default function App() {
               ) : (
                 <span className="tiny-dot" />
               )}
-              {statusText}
+              <span aria-live="polite">{statusText}</span>
             </button>
           )}
         </div>
@@ -1789,9 +1771,12 @@ export default function App() {
             const images = clipboardImages(event.clipboardData);
             if (!images.length) return;
             event.preventDefault();
-            if (busyRef.current) {setNotice("Attendez la préparation des fichiers."); return;}
-            upload(images);
+            queueFiles(images);
           }}>
+            {(preparingFiles || queued.length > 0) && <p className="composer-files-status" role="status">
+              {preparingFiles ? `Préparation des fichiers · ${preparingFiles.done}/${preparingFiles.total}` :
+                queued.length === 1 ? "1 pièce jointe" : `${queued.length} pièces jointes`}
+            </p>}
             {queued.length > 0 && (
               <div className="queued-files">
                 {queued.map((a) => (
@@ -1800,7 +1785,8 @@ export default function App() {
                     <span>{a.name}</span>
                     <button
                       aria-label={`Retirer ${a.name}`}
-                      onClick={() => removeQueued(a)}
+                      onClick={() => removeQueued(channel.id, a)}
+                      disabled={busy}
                     >
                       <X size={14} />
                     </button>
@@ -1812,8 +1798,8 @@ export default function App() {
               <button
                 className="attach-button"
                 type="button"
-                title="Ajouter un fichier"
-                aria-label="Ajouter un fichier"
+                title="Ajouter des fichiers"
+                aria-label="Ajouter des fichiers"
                 disabled={busy}
                 onClick={() => input.current?.click()}
               >
@@ -1830,6 +1816,7 @@ export default function App() {
                   if (
                     e.key === "Enter" &&
                     !e.shiftKey &&
+                    (!window.matchMedia?.("(pointer: coarse)").matches || e.ctrlKey || e.metaKey) &&
                     !e.nativeEvent.isComposing
                   ) {
                     e.preventDefault();
@@ -1866,7 +1853,11 @@ export default function App() {
         className="hidden"
         type="file"
         multiple
-        onChange={(e) => upload(e.target.files)}
+        onChange={(e) => {
+          const files = Array.from(e.currentTarget.files || []);
+          e.currentTarget.value = "";
+          queueFiles(files);
+        }}
       />
       {notice && <Toast text={notice} onClose={() => setNotice("")} />}
       {installOffer && desktopDownload && (
@@ -1902,7 +1893,9 @@ export default function App() {
       {gallery && (
         <ImageViewer
           url={gallery.url}
-          name={gallery.name}
+          name={gallery.attachment.name}
+          onDownload={() => download(gallery.attachment)}
+          downloading={busy}
           onClose={() => setGallery(null)}
         />
       )}
@@ -2154,7 +2147,7 @@ export default function App() {
                   setCloudBytes(0);
                   setQuota(null);
                   setDraft("");
-                  setQueued([]);
+                  setQueuedByChannel({});
                 });
               },
             });

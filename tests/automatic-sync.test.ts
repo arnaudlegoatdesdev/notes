@@ -196,6 +196,31 @@ describe("passwordless account access", () => {
   });
 });
 describe("concurrent PC and phone updates", () => {
+  it("uploads a dozen attachments in bounded batches before publishing their message", async () => {
+    const {session, key, cloud} = await setup();
+    const attachments = [];
+    for (let index = 0; index < 12; index++) {
+      attachments.push(await session.addFile(new File(["photo"], `photo-${index}.jpg`, {type: "image/jpeg"})));
+    }
+    const message = {...note(session.data, "Album"), attachments};
+    await session.update(data => ({...data, messages: [message]}));
+    let active = 0;
+    let peak = 0;
+    cloud.afterCreate = async (name) => {
+      if (!name.startsWith("blob-")) return;
+      peak = Math.max(peak, ++active);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      active--;
+    };
+    const progress = vi.fn();
+    await syncVault(cloud, session, key, owner, undefined, progress);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(3);
+    expect(progress).toHaveBeenLastCalledWith(12, 12);
+    const [head] = findHeads(await cloud.list());
+    const remote = await inspectManifest(key, await cloud.read(head.file.id));
+    expect(remote.messages[0].attachments).toEqual(attachments);
+  });
   it("keeps rapid writes and photo preparation independent of an in-flight upload", async () => {
     const {session, key, cloud} = await setup();
     const image = await session.addFile(new File(["photo"], "photo.png", {type: "image/png"}));

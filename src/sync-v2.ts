@@ -11,6 +11,7 @@ import {
 } from "./core/vault";
 import { readSyncState, writeSyncState } from "./sync-state";
 import { mergeVault } from "./merge";
+import { transferAttachments } from "./attachment-transfers";
 export { markDirty, readSyncState, writeSyncState } from "./sync-state";
 const uuid = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
 const pattern = new RegExp(
@@ -224,12 +225,15 @@ export class SyncFailure extends Error {
     );
   }
 }
+type TransferProgress = (done: number, total: number) => void;
+
 export async function syncVault(
   conn: CloudConnection,
   original: VaultSession,
   secret: VaultSecret,
   owner: string,
   onChange?: () => void,
+  onProgress?: TransferProgress,
 ) {
   let live = original;
   let applied = false;
@@ -238,7 +242,7 @@ export async function syncVault(
       live = value;
       applied = true;
       onChange?.();
-    });
+    }, onProgress);
   } catch (error) {
     if (applied) throw new SyncFailure(error, live);
     throw error;
@@ -250,6 +254,7 @@ async function performSync(
   secret: VaultSecret,
   owner: string,
   onSession: (value: VaultSession) => void,
+  onProgress?: TransferProgress,
 ): Promise<{
   session: VaultSession;
   quota: CloudQuota | null;
@@ -269,6 +274,7 @@ async function performSync(
     return dirty;
   };
   for (let attempt = 0; attempt < 5; attempt++) {
+    onProgress?.(0, 0);
     const snapshot = await session.snapshot();
     const {revision, manifest: localManifest, data: local} = snapshot;
     assertVaultOwner(local, owner);
@@ -319,14 +325,27 @@ async function performSync(
     if (cloudBytes + required > Math.min(merged.preferences.limitBytes, session.data.preferences.limitBytes)) throw new Error("La limite Notes est atteinte. Augmentez-la dans les paramètres.");
     const quota = await conn.quota();
     if (quota?.total !== undefined && required > quota.total - quota.used) throw new Error("Google Drive est plein. Vos modifications restent enregistrées en local.");
-    for (const item of missing) {
-      let ciphertext: Uint8Array;
-      try { ciphertext = await loader(conn, files, session)(item); }
-      catch (error) {
-        if ((await session.snapshot()).revision !== revision && !refs(session.data).has(item.id)) return {session, quota, changed, cloudBytes, pending: true};
+    if (missing.length) {
+      const readAttachment = loader(conn, files, session);
+      const removedLocally = new Error("Une pièce jointe a été supprimée pendant la synchronisation.");
+      let uploaded = 0;
+      onProgress?.(uploaded, missing.length);
+      try {
+        await transferAttachments(missing, async item => {
+          let ciphertext: Uint8Array;
+          try {
+            ciphertext = await readAttachment(item);
+          } catch (error) {
+            if ((await session.snapshot()).revision !== revision && !refs(session.data).has(item.id)) throw removedLocally;
+            throw error;
+          }
+          await conn.create(`blob-${item.id}.flion`, ciphertext);
+          onProgress?.(++uploaded, missing.length);
+        });
+      } catch (error) {
+        if (error === removedLocally) return {session, quota, changed, cloudBytes, pending: true};
         throw error;
       }
-      await conn.create(`blob-${item.id}.flion`, ciphertext);
     }
     const fresh = findHeads(await conn.list()).map((h) => h.id).join(",");
     if (fresh !== findHeads(files).map((h) => h.id).join(",")) continue;

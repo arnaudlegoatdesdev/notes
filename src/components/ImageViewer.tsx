@@ -2,7 +2,9 @@ import {useEffect, useLayoutEffect, useRef, useState} from "react";
 import {Download, Maximize2, Minus, Plus, X} from "lucide-react";
 import {constrainView, fitImage, MAX_ZOOM, zoomAt, type View} from "../image-view";
 const initial: View = {scale: 1, x: 0, y: 0};
-export default function ImageViewer({url, name, onClose}: {url: string; name: string; onClose: () => void}) {
+export default function ImageViewer({url, name, onClose, onDownload, downloading}: {
+  url: string; name: string; onClose: () => void; onDownload: () => void; downloading?: boolean;
+}) {
   const stage = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null), close = useRef<HTMLButtonElement>(null);
   const [viewport, setViewport] = useState({width: 1, height: 1});
   const [natural, setNatural] = useState({width: 0, height: 0});
@@ -92,7 +94,7 @@ export default function ImageViewer({url, name, onClose}: {url: string; name: st
         <button className="icon-button" aria-label="Zoomer" disabled={percent >= MAX_ZOOM * 100} onClick={() => animate(zoomAt(view.current, target.current.scale * 1.25, {x: 0, y: 0}))}><Plus size={19}/></button>
         <button className="icon-button" aria-label="Ajuster l’image" onClick={() => animate({...initial})}><Maximize2 size={17}/></button>
       </div>
-      <a className="icon-button" href={url} download={name} aria-label="Télécharger l’image"><Download size={19}/></a>
+      <button className="icon-button" onClick={onDownload} disabled={downloading} aria-label="Télécharger l’image"><Download size={19}/></button>
       <button ref={close} className="icon-button" aria-label="Fermer l’image" onClick={onClose}><X size={22}/></button>
     </header>
     <div ref={stage} className={`viewer-stage ${percent > 100 ? "zoomed" : ""} ${dragging ? "dragging" : ""}`}

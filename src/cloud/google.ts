@@ -201,7 +201,7 @@ export class GoogleConnection
 {
   readonly provider = "google" as const;
   account = "";
-  private createQueue: Promise<unknown> = Promise.resolve();
+  private readonly createsByName = new Map<string, Promise<CloudFile>>();
 
   async identify(): Promise<void> {
     const data = await (
@@ -259,10 +259,13 @@ export class GoogleConnection
   }
   create(name: string, bytes: Uint8Array): Promise<CloudFile> {
     validateName(name);
-    const operation = this.createQueue.then(() =>
-      this.createUnique(name, bytes),
-    );
-    this.createQueue = operation.catch(() => undefined);
+    const previous = this.createsByName.get(name);
+    const operation = (previous?.catch(() => undefined) ?? Promise.resolve())
+      .then(() => this.createUnique(name, bytes))
+      .finally(() => {
+        if (this.createsByName.get(name) === operation) this.createsByName.delete(name);
+      });
+    this.createsByName.set(name, operation);
     return operation;
   }
   private async createUnique(

@@ -96,7 +96,7 @@ describe("Notes account and empty workspace flow", () => {
     rememberStorage(user.id,"local"); vi.mocked(restoreGoogleSession).mockResolvedValue(user);
     render(<App/>);
     const composer=await screen.findByRole("textbox",{name:"Écrire dans Personnel"});
-    await waitFor(()=>expect((screen.getByRole("button",{name:"Ajouter un fichier"}) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(()=>expect((screen.getByRole("button",{name:"Ajouter des fichiers"}) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.change(composer,{target:{value:"Avec ma capture"}});
     const image=new File(["image"],"capture.png",{type:"image/png"});
     Object.defineProperty(image,"arrayBuffer",{value:async()=>new TextEncoder().encode("image").buffer});
@@ -117,16 +117,17 @@ describe("Notes account and empty workspace flow", () => {
     await screen.findByText("25 Mio maximum par fichier.");
     expect(screen.queryByRole("button",{name:"Retirer trop.png"})).toBeNull();
   });
-  it("sends dropped files immediately without consuming the draft and shows the Google picture", async () => {
+  it("queues dropped and selected files in the original draft, then sends and downloads on demand", async () => {
     const initial = createData(); initial.owner = {provider:"google",subject:user.id};
     initial.channels.push({id:crypto.randomUUID(),spaceId:initial.id,name:"Personnel",description:"",icon:"hash"});
+    initial.channels.push({id:crypto.randomUUID(),spaceId:initial.id,name:"Travail",description:"",icon:"hash"});
     const record = makeAccess(user.id, initial.id); await saveAccess(record); await createVault(keyBytes(record), initial);
     rememberStorage(user.id, "local");
     const picture = "https://lh3.googleusercontent.com/a/test-photo";
     vi.mocked(restoreGoogleSession).mockResolvedValue({...user, name:"Sophie Martin", picture});
     const {container} = render(<App/>);
     const composer = await screen.findByRole("textbox",{name:"Écrire dans Personnel"});
-    await waitFor(() => expect((screen.getByRole("button",{name:"Ajouter un fichier"}) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect((screen.getByRole("button",{name:"Ajouter des fichiers"}) as HTMLButtonElement).disabled).toBe(false));
     expect(container.querySelector('.user-card .profile-picture')?.getAttribute('src')).toBe(picture);
     expect(container.querySelector('.profile-mini .profile-picture')?.getAttribute('src')).toBe(picture);
     fireEvent.change(composer,{target:{value:"Mon brouillon reste ici"}});
@@ -140,20 +141,41 @@ describe("Notes account and empty workspace flow", () => {
     fireEvent.dragEnter(conversation,{dataTransfer:transfer});
     expect(screen.getByText("Relâchez vos fichiers")).toBeTruthy();
     fireEvent.drop(conversation,{dataTransfer:transfer});
+    await screen.findByRole("button", {name:"Retirer second.txt"});
+    expect((await inspectManifest(keyBytes(record),(await localManifest())!)).messages).toHaveLength(0);
+    expect((composer as HTMLTextAreaElement).value).toBe("Mon brouillon reste ici");
+    expect(screen.queryByText("Relâchez vos fichiers")).toBeNull();
+    const picker = container.querySelector<HTMLInputElement>('input[type="file"][multiple]')!;
+    await waitFor(() => expect(screen.getByText("2 pièces jointes")).toBeTruthy());
+    const photos = Array.from({length: 12}, (_, index) => makeFile("photo", `photo-${index}.jpg`));
+    fireEvent.change(picker, {target:{files:photos}});
+    await screen.findByText("14 pièces jointes");
+    fireEvent.click(screen.getByText("Travail"));
+    expect(screen.queryByRole("button", {name:"Retirer second.txt"})).toBeNull();
+    fireEvent.click(screen.getByText("Personnel"));
+    expect((screen.getByRole("textbox", {name:"Écrire dans Personnel"}) as HTMLTextAreaElement).value).toBe("Mon brouillon reste ici");
+    fireEvent.click(screen.getByRole("button", {name:"Retirer second.txt"}));
+    await screen.findByText("13 pièces jointes");
+    fireEvent.click(screen.getByRole("button", {name:"Envoyer le message"}));
     await waitFor(async () => {
       const saved = await inspectManifest(keyBytes(record),(await localManifest())!);
       expect(saved.messages).toHaveLength(1);
-      expect(saved.messages[0].attachments.map(a=>a.name)).toEqual(["premier.txt","second.txt"]);
+      expect(saved.messages[0].text).toBe("Mon brouillon reste ici");
+      expect(saved.messages[0].attachments.map(a=>a.name)).toEqual(["premier.txt", ...photos.map(file => file.name)]);
     });
-    expect((composer as HTMLTextAreaElement).value).toBe("Mon brouillon reste ici");
-    expect(screen.queryByText("Relâchez vos fichiers")).toBeNull();
     expect(container.querySelector('.message-avatar .profile-picture')?.getAttribute('src')).toBe(picture);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      expect(this.download).toBe("premier.txt");
+    });
+    fireEvent.click(screen.getByRole("button", {name:"Télécharger premier.txt"}));
+    await screen.findByText("Téléchargement lancé · premier.txt");
     const oversized = makeFile("small","gros.bin"); Object.defineProperty(oversized,"size",{value:26*1024**2});
-    await waitFor(() => expect((screen.getByRole("button",{name:"Ajouter un fichier"}) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect((screen.getByRole("button",{name:"Ajouter des fichiers"}) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.drop(conversation,{dataTransfer:{...transfer,files:[oversized]}});
     await screen.findByText("25 Mio maximum par fichier.");
     expect((await inspectManifest(keyBytes(record),(await localManifest())!)).messages).toHaveLength(1);
     fireEvent.drop(document.body,{dataTransfer:transfer});
+    expect(screen.queryByRole("button", {name:"Retirer premier.txt"})).toBeNull();
     expect((await inspectManifest(keyBytes(record),(await localManifest())!)).messages).toHaveLength(1);
   });
   it("still warns about unsent Drive changes when its Google authorization must be renewed", async () => {
@@ -216,7 +238,7 @@ describe("Notes account and empty workspace flow", () => {
       send("Troisième message");
       expect(screen.getByText("Deuxième message")).toBeTruthy();
       expect(screen.getByText("Troisième message")).toBeTruthy();
-      expect((screen.getByRole("button", {name: "Ajouter un fichier"}) as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByRole("button", {name: "Ajouter des fichiers"}) as HTMLButtonElement).disabled).toBe(false);
       const second = screen.getByText("Deuxième message").closest("article")!;
       fireEvent.click(second.querySelector('button[aria-label="Modifier le message"]')!);
       fireEvent.change(screen.getByRole("textbox", {name: "Modifier le message"}), {target: {value: "Message corrigé"}});
@@ -277,7 +299,7 @@ describe("Notes account and empty workspace flow", () => {
       expect(
         (
           screen.getByRole("button", {
-            name: "Ajouter un fichier",
+            name: "Ajouter des fichiers",
           }) as HTMLButtonElement
         ).disabled,
       ).toBe(false),
