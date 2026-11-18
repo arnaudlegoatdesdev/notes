@@ -61,7 +61,6 @@ import type {
   Message,
   Preferences,
   Provider,
-  Theme,
   VaultData,
   AccessRecord,
 } from "./core/types";
@@ -114,6 +113,8 @@ import {useChatFileDrop, readNativeDroppedFile} from "./file-drop";
 import {clipboardImages} from "./clipboard-images";
 import { saveAttachment } from "./attachment-download";
 import { useMobileViewport } from "./mobile-viewport";
+import { selectTheme, visibleTheme } from "./core/themes";
+import ThemeChooser from "./components/ThemeChooser";
 import VaultSetup, { type VaultOptions } from "./components/VaultSetup";
 import GoogleMark from "./components/GoogleMark";
 import PlatformIcon from "./components/PlatformIcon";
@@ -176,14 +177,6 @@ const day = (at: string) => {
           year: "numeric",
         });
 };
-const themes: { id: Theme; name: string; color: string; bg: string }[] = [
-  { id: "onyx", name: "Onyx", color: "#b7c9e8", bg: "#000000" },
-  { id: "slate", name: "Ardoise", color: "#b7c9e8", bg: "#1e222a" },
-  { id: "light", name: "Clair", color: "#405a82", bg: "#fafbfd" },
-  { id: "forest", name: "Forêt", color: "#b2caa3", bg: "#17241f" },
-  { id: "sand", name: "Sable", color: "#896b43", bg: "#efe7dc" },
-  { id: "plum", name: "Prune", color: "#d6b9de", bg: "#28212e" },
-];
 function Brand({ small = false }: { small?: boolean }) {
   return (
     <img className={`brandmark ${small ? "small" : ""}`} src={`${import.meta.env.BASE_URL}favicon.svg?v=0.4.5`} alt="" />
@@ -539,7 +532,7 @@ export default function App() {
       end.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [data.messages.length, active, query, view]);
   useEffect(() => {
-    document.documentElement.dataset.theme = data.preferences.theme;
+    document.documentElement.dataset.theme = visibleTheme(data.preferences);
     document.documentElement.style.fontSize = `${data.preferences.fontSize}px`;
     document.documentElement.dataset.font = data.preferences.font;
   }, [data.preferences]);
@@ -873,8 +866,11 @@ export default function App() {
       setTimeout(() => URL.revokeObjectURL(url), 10000);
       setNotice("Sauvegarde exportée. Gardez ce fichier privé.");
     });
-  const changePreferences = (preferences: Preferences) =>
-    void run(() => commit({ ...data, preferences }));
+  const changeAppearance = (apply: (p: Preferences) => Preferences) =>
+    changes.current?.add("Modifier l’apparence", (current) => ({
+      ...current,
+      preferences: apply(current.preferences),
+    }));
   const visible = data.messages.filter(
     (m) =>
       (query ? spaceChannelIds.has(m.channelId) : m.channelId === channel?.id) &&
@@ -2086,7 +2082,11 @@ export default function App() {
           connection={connection}
           busy={busy || syncStatus === "syncing"}
           onClose={() => setModal(null)}
-          onPreferences={changePreferences}
+          onAppearanceChange={changeAppearance}
+          onLimitChange={(limitBytes) => void run(() => commit({
+            ...data,
+            preferences: { ...data.preferences, limitBytes },
+          }))}
           onExport={exportBackup}
           onConnect={() => setModal("connect")}
           onSignOut={signOut}
@@ -2333,7 +2333,8 @@ function SettingsPanel({
   connection,
   busy,
   onClose,
-  onPreferences,
+  onAppearanceChange,
+  onLimitChange,
   onExport,
   onConnect,
   onSignOut,
@@ -2351,7 +2352,8 @@ function SettingsPanel({
   connection: CloudConnection | null;
   busy: boolean;
   onClose: () => void;
-  onPreferences: (p: Preferences) => void;
+  onAppearanceChange: (apply: (p: Preferences) => Preferences) => void;
+  onLimitChange: (limitBytes: number) => void;
   onExport: () => void;
   onConnect: () => void;
   onSignOut: () => void;
@@ -2402,41 +2404,17 @@ function SettingsPanel({
         <div className="settings-content">
           {tab === "appearance" && (
             <>
-              <h3>À votre goût.</h3>
-              <p className="muted">Un espace dans lequel on se sent bien.</p>
-              <label>Thème</label>
-              <div className="theme-grid">
-                {themes.map((t) => (
-                  <button
-                    key={t.id}
-                    className={p.theme === t.id ? "selected" : ""}
-                    onClick={() => onPreferences({ ...p, theme: t.id })}
-                    disabled={busy}
-                  >
-                    <span
-                      className="theme-preview"
-                      style={{ background: t.bg, color: t.color }}
-                    >
-                      <span />
-                      <span />
-                      <span />
-                      {p.theme === t.id && <Check size={16} />}
-                    </span>
-                    <span>{t.name}</span>
-                  </button>
-                ))}
-              </div>
+              <h3>Thèmes</h3>
+              <ThemeChooser selected={visibleTheme(p)}
+                onChoose={theme => onAppearanceChange(current => selectTheme(current, theme))} />
               <label htmlFor="font">Police</label>
               <select
                 id="font"
                 value={p.font}
-                onChange={(e) =>
-                  onPreferences({
-                    ...p,
-                    font: e.target.value as Preferences["font"],
-                  })
-                }
-                disabled={busy}
+                onChange={(e) => {
+                  const font = e.currentTarget.value as Preferences["font"];
+                  onAppearanceChange(current => ({ ...current, font }));
+                }}
               >
                 <option value="system">Système</option>
                 <option value="inter">Sans serif</option>
@@ -2454,10 +2432,10 @@ function SettingsPanel({
                 max="20"
                 step="1"
                 value={p.fontSize}
-                onChange={(e) =>
-                  onPreferences({ ...p, fontSize: Number(e.target.value) })
-                }
-                disabled={busy}
+                onChange={(e) => {
+                  const fontSize = e.currentTarget.valueAsNumber;
+                  onAppearanceChange(current => ({ ...current, fontSize }));
+                }}
               />
               <div className="type-preview">
                 <strong>Une idée à garder.</strong>
@@ -2497,13 +2475,10 @@ function SettingsPanel({
                 onSubmit={(e) => {
                   e.preventDefault();
                   try {
-                    onPreferences({
-                      ...p,
-                      limitBytes: validateLimit(
-                        Number(limit),
-                        availableCloudBytes(quota, cloudBytes),
-                      ),
-                    });
+                    onLimitChange(validateLimit(
+                      Number(limit),
+                      availableCloudBytes(quota, cloudBytes),
+                    ));
                     setLimitError("");
                   } catch (error) {
                     setLimitError(

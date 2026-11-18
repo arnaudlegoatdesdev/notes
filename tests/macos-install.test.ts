@@ -32,32 +32,32 @@ describe("platform-specific direct downloads", () => {
   });
   it("selects the Mac universal DMG and preserves the existing Windows installer", () => {
     const root =
-      "https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.5/";
+      "https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.6/";
     const release = {
-      tag_name: "v0.4.5",
+      tag_name: "v0.4.6",
       assets: [
         {
-          name: "Notes_0.4.5_universal.dmg",
-          browser_download_url: root + "Notes_0.4.5_universal.dmg",
+          name: "Notes_0.4.6_universal.dmg",
+          browser_download_url: root + "Notes_0.4.6_universal.dmg",
         },
         {
-          name: "Notes_0.4.5_x64-setup.exe",
-          browser_download_url: root + "Notes_0.4.5_x64-setup.exe",
+          name: "Notes_0.4.6_x64-setup.exe",
+          browser_download_url: root + "Notes_0.4.6_x64-setup.exe",
         },
       ],
     };
     expect(macAsset(release)).toMatchObject({
       platform: "macos",
-      url: root + "Notes_0.4.5_universal.dmg",
+      url: root + "Notes_0.4.6_universal.dmg",
     });
-    expect(windowsAsset(release)?.url).toBe(root + "Notes_0.4.5_x64-setup.exe");
+    expect(windowsAsset(release)?.url).toBe(root + "Notes_0.4.6_x64-setup.exe");
     expect(macAsset({ ...release, draft: true })).toBeNull();
     expect(
       macAsset({
         ...release,
         assets: [
           {
-            name: "Notes_0.4.5_universal.dmg",
+            name: "Notes_0.4.6_universal.dmg",
             browser_download_url: "https://example.com/fake.dmg",
           },
         ],

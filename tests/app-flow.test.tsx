@@ -9,6 +9,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import App from "../src/App";
 import { clearLocalVault, createVault, unlockVault, localManifest, inspectManifest } from "../src/core/vault";
@@ -203,7 +204,7 @@ describe("Notes account and empty workspace flow", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(connectCloud).not.toHaveBeenCalled();
   });
-  it("keeps sending, editing, pinning and deleting responsive while Drive is stalled", async () => {
+  it("keeps note edits and appearance changes responsive while Drive is stalled", async () => {
     const data = createData();
     data.owner = {provider: "google", subject: user.id};
     const channelId = crypto.randomUUID();
@@ -264,6 +265,22 @@ describe("Notes account and empty workspace flow", () => {
         expect(local.messages.map(m => m.text)).toEqual(["Message corrigé", "Troisième message"]);
         expect(local.messages[0].pinned).toBe(true);
       });
+      fireEvent.click(screen.getByRole("button", {name: "Paramètres"}));
+      const variants = screen.getByRole("group", {name: "Variations"});
+      expect(variants.querySelectorAll("button")).toHaveLength(10);
+      const braise = screen.getByRole<HTMLButtonElement>("button", {name: "Braise"});
+      expect(braise.disabled).toBe(false);
+      fireEvent.click(braise);
+      expect(document.documentElement.dataset.theme).toBe("braise");
+      fireEvent.click(screen.getByRole("button", {name: "Grenat"}));
+      fireEvent.change(screen.getByLabelText("Police"), {target: {value: "mono"}});
+      expect(document.documentElement.dataset.theme).toBe("grenat");
+      expect(screen.getByRole("button", {name: "Grenat"}).getAttribute("aria-pressed")).toBe("true");
+      await waitFor(async () => {
+        const local = await inspectManifest(keyBytes(record), (await localManifest())!);
+        expect(local.preferences).toMatchObject({theme: "plum", themeVariant: "grenat", font: "mono"});
+      });
+      fireEvent.click(within(screen.getByRole("dialog", {name: "Paramètres"})).getByRole("button", {name: "Fermer"}));
       const leaving = new Event("beforeunload", {cancelable: true});
       window.dispatchEvent(leaving);
       expect(leaving.defaultPrevented).toBe(true);
@@ -357,6 +374,10 @@ describe("Notes account and empty workspace flow", () => {
     fireEvent.click(screen.getByRole("button", {name: "Paramètres"}));
     fireEvent.click(screen.getByRole("button", {name: "Onyx"}));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("onyx"));
+    await waitFor(async () => {
+      const persisted = await inspectManifest(keyBytes(record), (await localManifest())!);
+      expect(persisted.preferences.theme).toBe("onyx");
+    });
     cleanup();
     render(<App />);
     await screen.findByRole("heading", {name: "Créez votre premier salon"});

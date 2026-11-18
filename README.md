@@ -4,7 +4,7 @@ Une application personnelle pour les mémos, les photos et les fichiers, organis
 
 > Projet personnel développé rapidement à la demande de plusieurs personnes, avec une aide importante de l’IA pour le code, l’interface et la documentation. Il est indépendant de ma formation et de tout travail scolaire. Il ne représente pas une évaluation de mes compétences ou de mon apprentissage.
 
-[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.5/Notes_0.4.5_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.5/Notes_0.4.5_universal.dmg)
+[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.6/Notes_0.4.6_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.6/Notes_0.4.6_universal.dmg)
 
 ## Utilisation
 
@@ -33,7 +33,7 @@ Sur Windows, l’accès Google est renouvelé automatiquement. Dans le navigateu
 - Cartes de liens avec titre, description et image si disponibles. Dans le navigateur, repli sur une carte simple quand le site refuse CORS. Les aperçus obtenus dans l’app sont chiffrés et synchronisés avec les notes.
 - Ouverture des liens dans le navigateur système sur Windows et macOS.
 - Espaces distincts, chacun avec ses salons, sa recherche et une icône ou image personnalisée.
-- Six thèmes, dont Onyx pour les écrans OLED, choix de police et taille du texte.
+- Seize thèmes, dont Onyx et Néon pour les écrans OLED, choix de police et taille du texte.
 - Chiffrement local AES 256 GCM et synchronisation directe avec Google Drive.
 - Stockage local seul possible, avec avertissement sur l’absence de synchronisation.
 - Fusion automatique des modifications entre ordinateur et téléphone.
@@ -93,3 +93,7 @@ Collez une image dans la zone de saisie avec Ctrl + V ou Cmd + V. Elle est ajout
 ### Version 0.4.5
 
 Les fichiers déposés rejoignent le brouillon. Vous pouvez ajouter ou retirer des fichiers, écrire une note, puis envoyer le tout ensemble. Plusieurs sélections peuvent alimenter le même brouillon, jusqu’à 100 pièces jointes par message et 25 Mio par fichier. Notes affiche la progression de la préparation et de l’envoi sur Drive. Un message indique que le téléchargement a démarré sur le web ou que le fichier a été enregistré dans l’application de bureau. Les champs de saisie mobile évitent le zoom automatique et les boutons du composeur sont plus grands. L’icône N et les thèmes principaux adoptent le bleu ardoise.
+
+### Version 0.4.6
+
+Dix thèmes s’ajoutent aux six classiques. Les choix d’apparence s’appliquent immédiatement, même pendant une synchronisation Drive. Un appareil sur une version précédente affiche le thème classique associé à la nouvelle palette. Sur Windows, l’installeur actualise l’icône des raccourcis Notes existants sur le Bureau et dans le menu Démarrer.

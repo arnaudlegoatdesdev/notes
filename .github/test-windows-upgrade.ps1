@@ -21,7 +21,7 @@ function Get-Registration([string]$name) {
 }
 
 function Invoke-Installer([string]$path, [string[]]$arguments) {
-  $process = Start-Process -FilePath $path -ArgumentList $arguments -PassThru
+  $process = Start-Process -FilePath $path -ArgumentList $arguments -WindowStyle Hidden -PassThru
   if (-not $process.WaitForExit(180000)) {
     $process.Kill($true)
     throw "Le test de l’installeur a dépassé le délai autorisé."
@@ -62,10 +62,46 @@ if ((Get-Content $marker -Raw).Trim() -ne 'Storage must survive a product rename
 $startMenu = [Environment]::GetFolderPath('Programs')
 $desktop = [Environment]::GetFolderPath('Desktop')
 $notesShell = New-Object -ComObject WScript.Shell
+$expectedIcon = (Get-FileHash 'src-tauri/icons/icon.ico').Hash
+
+function Assert-ShortcutIcon([string]$link, [string]$installDirectory) {
+  if (-not (Test-Path -LiteralPath $link)) { throw "Raccourci Notes introuvable : $link" }
+  $shortcut = $notesShell.CreateShortcut($link)
+  if ($shortcut.TargetPath -ine (Join-Path $installDirectory 'Notes.exe')) {
+    throw "Un raccourci Notes pointe vers un exécutable incorrect."
+  }
+  $iconPath = Join-Path $installDirectory "Notes-$version.ico"
+  if ($shortcut.IconLocation -ine "$iconPath,0" -or (Get-FileHash -LiteralPath $iconPath).Hash -ne $expectedIcon) {
+    throw "Le raccourci ne pointe pas vers l’icône de Notes $version."
+  }
+}
+
 foreach ($folder in @($startMenu, $desktop)) {
   if (Test-Path (Join-Path $folder 'Flion.lnk')) { throw "Un ancien raccourci subsiste." }
-  $link = Join-Path $folder 'Notes.lnk'
-  if (-not (Test-Path $link)) { throw "Raccourci Notes introuvable." }
-  if ($notesShell.CreateShortcut($link).TargetPath -ine (Join-Path $directory 'Notes.exe')) { throw "Un raccourci Notes pointe vers un exécutable incorrect." }
+  Assert-ShortcutIcon (Join-Path $folder 'Notes.lnk') $directory
 }
-Write-Output 'Mise à jour Windows validée : un seul produit Notes, données conservées et raccourcis actualisés.'
+Write-Output 'Migration Flion validée avec la nouvelle icône.'
+
+# Exercise the update path from a Notes installation that already has both links.
+Invoke-Installer (Join-Path $directory 'uninstall.exe') @('/S', "_?=$directory")
+$previousInstaller = Join-Path $env:RUNNER_TEMP 'notes-upgrade-0.4.5.exe'
+Invoke-WebRequest 'https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.5/Notes_0.4.5_x64-setup.exe' -OutFile $previousInstaller
+Invoke-Installer $previousInstaller @('/S')
+$previous = Get-Registration 'Notes'
+if ($null -eq $previous -or $previous.DisplayVersion -ne '0.4.5') { throw "Installation de la version de référence impossible." }
+$directory = ([string]$previous.InstallLocation).Trim('"')
+$links = @($startMenu, $desktop) | ForEach-Object { Join-Path $_ 'Notes.lnk' }
+foreach ($link in $links) {
+  if (-not (Test-Path -LiteralPath $link)) { throw "Raccourci de référence introuvable : $link" }
+  $shortcut = $notesShell.CreateShortcut($link)
+  $shortcut.Arguments = '--test-shortcut-arguments'
+  $shortcut.Save()
+}
+Invoke-Installer $installer.FullName @('/S', '/UPDATE')
+foreach ($link in $links) {
+  Assert-ShortcutIcon $link $directory
+  if ($notesShell.CreateShortcut($link).Arguments -ne '--test-shortcut-arguments') {
+    throw "La mise à jour a modifié les arguments du raccourci."
+  }
+}
+Write-Output 'Mise à jour Notes validée : cible, icône et arguments préservés dans les raccourcis.'

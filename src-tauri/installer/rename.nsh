@@ -7,6 +7,32 @@ Var NotesLegacyFound
 Var NotesLegacyDesktop
 Var NotesSavedUpdateMode
 
+!macro NotesRefreshShortcutIcon shortcut
+  !insertmacro IsShortcutTarget "${shortcut}" "$INSTDIR\${MAINBINARYNAME}.exe"
+  Pop $0
+  ${If} $0 = 1
+    !insertmacro ComHlpr_CreateInProcInstance ${CLSID_ShellLink} ${IID_IShellLink} r0 ""
+    ${If} $0 P<> 0
+      ${IUnknown::QueryInterface} $0 '("${IID_IPersistFile}",.r1)'
+      ${If} $1 P<> 0
+        ${IPersistFile::Load} $1 '("${shortcut}", ${STGM_READWRITE})i.r2'
+        ${If} $2 = 0
+          ${IShellLink::SetIconLocation} $0 '(w "$INSTDIR\Notes-${VERSION}.ico", i 0)i.r2'
+          ${If} $2 = 0
+            ${IPersistFile::Save} $1 '("${shortcut}",1)i.r2'
+            ${If} $2 = 0
+              ; SHCNE_UPDATEITEM with a Unicode path.
+              System::Call 'shell32::SHChangeNotify(i 0x2000, i 0x0005, w "${shortcut}", p 0)'
+            ${EndIf}
+          ${EndIf}
+        ${EndIf}
+        ${IUnknown::Release} $1 ""
+      ${EndIf}
+      ${IUnknown::Release} $0 ""
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
   StrCpy $NotesLegacyFound 0
   ReadRegStr $0 HKCU "${UNINSTKEY}" "MainBinaryName"
@@ -57,4 +83,18 @@ Var NotesSavedUpdateMode
     ${EndIf}
     StrCpy $UpdateMode $NotesSavedUpdateMode
   ${EndIf}
+
+  ; A versioned icon path gives Explorer a new cache key on every update.
+  SetOutPath "$INSTDIR"
+  File "/oname=Notes-${VERSION}.ico" "${INSTALLERICON}"
+  !insertmacro MUI_STARTMENU_GETFOLDER Application $AppStartMenuFolder
+  !if "${STARTMENUFOLDER}" != ""
+    !insertmacro NotesRefreshShortcutIcon "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk"
+  !endif
+  !insertmacro NotesRefreshShortcutIcon "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+  !insertmacro NotesRefreshShortcutIcon "$DESKTOP\${PRODUCTNAME}.lnk"
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  Delete "$INSTDIR\Notes-${VERSION}.ico"
 !macroend
