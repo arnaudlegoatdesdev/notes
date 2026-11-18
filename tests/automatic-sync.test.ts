@@ -5,6 +5,7 @@ import {
   createVault,
   inspectManifest,
   sealManifest,
+  selectVaultAccount,
   unlockVault,
 } from "../src/core/vault";
 import type { VaultData } from "../src/core/types";
@@ -196,6 +197,41 @@ describe("passwordless account access", () => {
   });
 });
 describe("concurrent PC and phone updates", () => {
+  it("rejects an altered transfer and syncs a valid copy to the destination Drive", async () => {
+    const sourceOwner = "account-of-the-backup";
+    const sourceData = seed();
+    sourceData.owner = {provider:"google", subject:sourceOwner};
+    const sourceAccess = makeAccess(sourceOwner, sourceData.id);
+    selectVaultAccount(sourceOwner);
+    let bundle;
+    try {
+      await clearLocalVault();
+      const source = await createVault(keyBytes(sourceAccess), sourceData);
+      const attachment = await source.addFile(new File(["contenu d’origine"], "carnet.txt"));
+      await source.update(data => ({...data, messages:[{...note(data, "Notes copiées"), attachments:[attachment]}]}));
+      bundle = await unpackBundle(new File([await packSession(source, sourceAccess)], "sauvegarde.notes"));
+      source.lock();
+    } finally {
+      await clearLocalVault();
+      selectVaultAccount("");
+    }
+    const {session, cloud, record, key} = await setup();
+    await session.update(data => ({...data, messages:[note(data,"Mes notes existantes")]}));
+    const corrupted = structuredClone(bundle);
+    Object.values(corrupted.files)[0][36] ^= 1;
+    await expect(session.appendBackup(corrupted, keyBytes(sourceAccess))).rejects.toThrow("endommagée");
+    expect(session.data.messages.map(message => message.text)).toEqual(["Mes notes existantes"]);
+    await session.appendBackup(bundle, keyBytes(sourceAccess));
+    await syncVault(cloud, session, key, owner);
+    expect(await readCloudAccess(cloud, owner)).toEqual(record);
+    session.lock();
+    await clearLocalVault();
+    writeSyncState(null);
+    const restored = await openCloudVault(cloud, key, owner);
+    expect(restored.data.messages.map(message => message.text).sort()).toEqual(["Mes notes existantes", "Notes copiées"]);
+    const copied = restored.data.messages.find(message => message.attachments.length)!;
+    expect(await (await restored.readFile(copied.attachments[0])).text()).toBe("contenu d’origine");
+  });
   it("uploads a dozen attachments in bounded batches before publishing their message", async () => {
     const {session, key, cloud} = await setup();
     const attachments = [];

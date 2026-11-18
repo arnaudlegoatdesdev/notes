@@ -54,6 +54,7 @@ import {
 } from "lucide-react";
 import type {
   Attachment,
+  EncryptedBundle,
   LinkPreview,
   Channel,
   Space,
@@ -69,6 +70,7 @@ import {
   unlockVault,
   hasVault,
   importVault,
+  importBackupCopy,
   clearLocalVault,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_FILE_BYTES,
@@ -93,7 +95,7 @@ import {
   SyncFailure,
 } from "./sync-v2";
 import { selectSyncAccount } from "./sync-state";
-import { packSession, unpackBundle } from "./archive";
+import { packSession } from "./archive";
 import { createData } from "./seed";
 import { isDesktop, checkForUpdate } from "./desktop";
 import { browserCloseGuard, nativeCloseGuard, pendingNativeWork, finishNativeExit } from "./close-behavior";
@@ -115,6 +117,7 @@ import { saveAttachment } from "./attachment-download";
 import { useMobileViewport } from "./mobile-viewport";
 import { selectTheme, visibleTheme } from "./core/themes";
 import ThemeChooser from "./components/ThemeChooser";
+import { BackupExport, BackupImport, type BackupProtection } from "./components/BackupPanels";
 import VaultSetup, { type VaultOptions } from "./components/VaultSetup";
 import GoogleMark from "./components/GoogleMark";
 import PlatformIcon from "./components/PlatformIcon";
@@ -346,7 +349,7 @@ export default function App() {
   });
   const [needsReconnect, setNeedsReconnect] = useState(false);
   const [modal, setModal] = useState<
-    "onboarding" | "settings" | "channel" | "spaces" | "space" | "connect" | "import" | null
+    "onboarding" | "settings" | "channel" | "spaces" | "space" | "connect" | "import" | "export" | null
   >(null);
   const [channelEdit, setChannelEdit] = useState<Channel | null>(null),
     [confirm, setConfirm] = useState<{
@@ -753,8 +756,8 @@ export default function App() {
     setDrawer(false);
     setEditing(null);
   };
-  const chooseSpace = (id: string) => {
-    const nextChannel = channelsInSpace(data, id)[0]?.id || "";
+  const chooseSpace = (id: string, nextData = data) => {
+    const nextChannel = channelsInSpace(nextData, id)[0]?.id || "";
     switchComposer(nextChannel);
     setActiveSpace(id);
     setActive(nextChannel);
@@ -849,22 +852,26 @@ export default function App() {
       if (!blob) throw new Error("Fichier indisponible.");
       setGallery({ url: URL.createObjectURL(blob), attachment: a });
     });
-  const exportBackup = () =>
+  const exportBackup = (protection?: BackupProtection) =>
     void run(async () => {
       await changes.current?.flush();
-      if (!session.current)
+      if (syncDone.current) await syncDone.current;
+      if (!session.current || !access.current)
         throw new Error("Créez votre coffre pour exporter une sauvegarde.");
       const blob = await packSession(
         session.current,
-        access.current || undefined,
+        access.current,
+        protection,
       );
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Notes-${new Date().toISOString().slice(0, 10)}.notes`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-      setNotice("Sauvegarde exportée. Gardez ce fichier privé.");
+      a.download = `Notes-${protection ? "copie-" : ""}${new Date().toISOString().slice(0, 10)}.notes`;
+      document.body.append(a);
+      try { a.click(); }
+      finally { a.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
+      setNotice(protection ? "Copie protégée exportée. Conservez son mot de passe à part." :
+        "Sauvegarde exportée. Gardez ce fichier privé.");
     });
   const changeAppearance = (apply: (p: Preferences) => Preferences) =>
     changes.current?.add("Modifier l’apparence", (current) => ({
@@ -1021,23 +1028,7 @@ export default function App() {
         record = opts.access;
       if (record && record.owner !== identity.id)
         throw new Error("Cet espace appartient à un autre compte Google.");
-      if (opts.backup) {
-        const bundle = await unpackBundle(opts.backup);
-        record = bundle.access;
-        if (!record)
-          throw new Error("Cette sauvegarde n’est pas compatible avec Notes.");
-        if (record.owner !== identity.id)
-          throw new Error(
-            "Cette sauvegarde appartient à un autre compte Google.",
-          );
-        const info = await inspectManifest(keyBytes(record), bundle.manifest);
-        assertVaultOwner(info, identity.id);
-        if (info.id !== record.vaultId)
-          throw new Error("La clé de cette sauvegarde est invalide.");
-        await saveAccess(record);
-        next = await importVault(keyBytes(record), bundle);
-        writeSyncState(null);
-      } else if (opts.open && opts.connection) {
+      if (opts.open && opts.connection) {
         if (!record)
           throw new Error("Configuration Notes introuvable sur Drive.");
         await saveAccess(record);
@@ -1069,6 +1060,54 @@ export default function App() {
       setModal(null);
       setSyncStatus(opts.connection ? "pending" : "local");
     });
+  const importBackup = (bundle: EncryptedBundle, copy: boolean) =>
+    void run(async () => {
+      if (!identity || !bundle.access) throw new Error("Connectez-vous avec Google.");
+      await changes.current?.flush();
+      if (syncDone.current) await syncDone.current;
+      const current = session.current;
+      const secret = keyBytes(bundle.access);
+      if (copy && current) {
+        assertVaultOwner(current.data, identity.id);
+        const spaceId = await current.appendBackup(bundle, secret);
+        markDirty();
+        changes.current?.refresh();
+        void current.usedBytes().then(value => { if (session.current === current) setUsed(value); }).catch(() => undefined);
+        if (connection) setSyncStatus("pending");
+        chooseSpace(spaceId, current.data);
+      } else {
+        let next: VaultSession;
+        let record: AccessRecord;
+        if (copy) {
+          record = makeAccess(identity.id, crypto.randomUUID());
+          await saveAccess(record);
+          next = await importBackupCopy(bundle, secret, {
+            id: record.vaultId, owner: identity.id, secret: keyBytes(record),
+          });
+        } else {
+          record = bundle.access;
+          if (record.owner !== identity.id) throw new Error("Choisissez la copie pour un autre compte Google.");
+          const info = await inspectManifest(secret, bundle.manifest);
+          assertVaultOwner(info, identity.id);
+          if (info.id !== record.vaultId) throw new Error("La clé de cette sauvegarde est invalide.");
+          const revision = await current?.storageRevision();
+          await saveAccess(record);
+          next = await importVault(secret, bundle, revision);
+        }
+        await replaceSession(next, record);
+        rememberStorage(identity.id, "local");
+        writeSyncState(null);
+        await connection?.disconnect().catch(() => undefined);
+        setConnection(null);
+        setQuota(null);
+        setCloudBytes(0);
+        setSyncError("");
+        setNeedsReconnect(false);
+        setSyncStatus("local");
+      }
+      setModal(null);
+      setNotice(copy ? "Notes copiées dans ce compte." : "Sauvegarde restaurée.");
+    });
   const setup = (restoreOnly = false) =>
     identity && (
       <VaultSetup
@@ -1077,8 +1116,14 @@ export default function App() {
         restoreOnly={restoreOnly}
         onSubmit={finishSetup}
         onChangeAccount={signOut}
+        onImport={restoreOnly ? undefined : () => setModal("import")}
       />
     );
+  const importDialog = modal === "import" && identity && (
+    <Modal title="Importer une sauvegarde" onClose={() => { if (!busyRef.current) setModal(null); }}>
+      <BackupImport user={identity} hasVault={mode === "vault"} busy={busy} onImport={importBackup} />
+    </Modal>
+  );
   if (mode === "loading")
     return (
       <div className="access-screen">
@@ -1152,6 +1197,7 @@ export default function App() {
           </div>
           {setup()}
         </section>
+        {importDialog}
         {notice && <Toast text={notice} onClose={() => setNotice("")} />}
       </div>
     );
@@ -1934,6 +1980,12 @@ export default function App() {
           {setup(true)}
         </Modal>
       )}
+      {importDialog}
+      {modal === "export" && (
+        <Modal title="Exporter une copie protégée" onClose={() => { if (!busyRef.current) setModal(null); }}>
+          <BackupExport busy={busy} onExport={exportBackup} />
+        </Modal>
+      )}
       {modal === "spaces" && (
         <Modal title="Mes espaces" onClose={() => setModal(null)}>
           <div className="space-list">
@@ -2087,10 +2139,12 @@ export default function App() {
             ...data,
             preferences: { ...data.preferences, limitBytes },
           }))}
-          onExport={exportBackup}
+          onExport={() => exportBackup()}
+          onProtectedExport={() => setModal("export")}
           onConnect={() => setModal("connect")}
           onSignOut={signOut}
-          onImport={() => {
+          onImport={() => setModal("import")}
+          onOpenDrive={() => {
             setModal(null);
             setConfirm({
               text: "Ouvrir un autre coffre remplacera la copie de cet appareil. Exportez une sauvegarde avant de continuer.",
@@ -2336,9 +2390,11 @@ function SettingsPanel({
   onAppearanceChange,
   onLimitChange,
   onExport,
+  onProtectedExport,
   onConnect,
   onSignOut,
   onImport,
+  onOpenDrive,
   onDisconnect,
   onUpdate,
   update,
@@ -2355,9 +2411,11 @@ function SettingsPanel({
   onAppearanceChange: (apply: (p: Preferences) => Preferences) => void;
   onLimitChange: (limitBytes: number) => void;
   onExport: () => void;
+  onProtectedExport: () => void;
   onConnect: () => void;
   onSignOut: () => void;
   onImport: () => void;
+  onOpenDrive: () => void;
   onDisconnect: () => void;
   onUpdate: () => void;
   update: { version: string } | null;
@@ -2558,7 +2616,7 @@ function SettingsPanel({
                 limite. Supprimer un message le retire de la version courante.
               </p>
               <p className="field-note">
-                La sauvegarde contient la clé. Gardez-la privée.
+                La sauvegarde standard contient la clé. Pour partager vos notes, exportez une copie protégée.
               </p>
               <div className="settings-buttons">
                 <button
@@ -2567,14 +2625,21 @@ function SettingsPanel({
                   disabled={busy}
                 >
                   <Download size={16} />
-                  Exporter une sauvegarde
+                  Exporter une sauvegarde standard
+                </button>
+                <button className="button secondary" onClick={onProtectedExport} disabled={busy}>
+                  <LockKeyhole size={16} />
+                  Exporter une copie protégée
                 </button>
                 <button
                   className="text-button"
                   onClick={onImport}
                   disabled={busy}
                 >
-                  Ouvrir une sauvegarde ou un cloud
+                  Importer une sauvegarde
+                </button>
+                <button className="text-button" onClick={onOpenDrive} disabled={busy}>
+                  Retrouver un coffre sur Drive
                 </button>
               </div>
               {

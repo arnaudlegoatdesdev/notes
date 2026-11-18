@@ -1,6 +1,7 @@
 import { mergeVault } from '../merge';
 import { isSpaceImage } from './space-image';
 import { isClassicTheme } from './themes';
+import { withSpaces } from '../spaces';
 import type { Attachment, EncryptedBundle, VaultData } from './types';
 import { transferAttachments } from '../attachment-transfers';
 
@@ -36,6 +37,7 @@ export interface VaultSession {
   exportBundle(): Promise<EncryptedBundle>;
   exportManifest(): Promise<Uint8Array>;
   readEncryptedFile(id: string): Promise<Uint8Array>;
+  appendBackup(bundle: EncryptedBundle, secret: VaultSecret): Promise<string>;
   usedBytes(): Promise<number>;
   storageRevision(): Promise<string>;
   lock(): void;
@@ -353,6 +355,25 @@ async function decryptFile(bytes: Uint8Array, id: string, key: CryptoKey): Promi
   } catch { throw new Error('Pièce jointe endommagée.'); }
 }
 
+async function encryptFile(plaintext: ArrayBuffer, id: string, key: CryptoKey): Promise<Uint8Array<ArrayBuffer>> {
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: concat(FILE_MAGIC, encoder.encode(id)) }, key, plaintext);
+  return concat(FILE_MAGIC, iv, new Uint8Array(ciphertext));
+}
+
+/** Exports a snapshot under a separate key, without sharing the live vault key. */
+export async function rekeyExport(vault: VaultSession, data: VaultData, secret: Uint8Array) {
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
+  const key = await derive(secret, salt);
+  return {
+    manifest: await encryptManifest(data, key, salt),
+    async read(item: Attachment) {
+      const file = await vault.readFile(item);
+      return encryptFile(await file.arrayBuffer(), item.id, key);
+    },
+  };
+}
+
 export async function inspectManifest(passphrase: VaultSecret, manifest: Uint8Array): Promise<VaultData> {
   return structuredClone((await decryptManifest(manifest, passphrase)).data);
 }
@@ -466,6 +487,78 @@ export async function importVault(passphrase: VaultSecret, bundle: EncryptedBund
     ensureFileReferences(data, files);
     if (references(data).size !== Object.keys(files).length) invalid();
   });
+}
+
+async function stageBackupCopy(
+  bundle: EncryptedBundle, secret: VaultSecret, destination: { id: string; owner: NonNullable<VaultData['owner']>; key: CryptoKey; salt: Uint8Array },
+  current?: { data: VaultData; state: StoredState; guard: () => void },
+) {
+  const source = await decryptManifest(bundle.manifest, secret);
+  if (!bundle.access || source.data.id !== bundle.access.vaultId ||
+    (source.data.owner && source.data.owner.subject !== bundle.access.owner)) invalid();
+  const original = withSpaces(source.data);
+  const items = references(original);
+  ensureFileReferences(original, bundle.files);
+  if (items.size !== Object.keys(bundle.files).length) invalid();
+  const spaceIds = new Map(original.spaces!.map(space => [space.id, crypto.randomUUID()]));
+  const channelIds = new Map(original.channels.map(channel => [channel.id, crypto.randomUUID()]));
+  const fileIds = new Map([...items.keys()].map(id => [id, crypto.randomUUID()]));
+  const spaces = original.spaces!.map(space => ({
+    ...space, id: spaceIds.get(space.id)!,
+    channelOrder: space.channelOrder?.flatMap(id => channelIds.has(id) ? [channelIds.get(id)!] : []),
+  }));
+  const channels = original.channels.map(channel => ({
+    ...channel, id: channelIds.get(channel.id)!, spaceId: spaceIds.get(channel.spaceId!)!,
+  }));
+  const messages = original.messages.map(message => ({
+    ...message, id: crypto.randomUUID(), channelId: channelIds.get(message.channelId)!,
+    attachments: message.attachments.map(item => ({ ...item, id: fileIds.get(item.id)! })),
+  }));
+  const existing = current ? withSpaces(current.data) : undefined;
+  const incoming: VaultData = existing
+    ? { ...existing, spaces: [...existing.spaces!, ...spaces],
+        channels: [...existing.channels, ...channels], messages: [...existing.messages, ...messages] }
+    : { id: destination.id, owner: destination.owner, version: 2, createdAt: new Date().toISOString(),
+        preferences: original.preferences, spaces, channels, messages };
+  validateData(incoming);
+  const manifest = await encryptManifest(incoming, destination.key, destination.salt);
+  const fileSizes = { ...current?.state.fileSizes };
+  const fileKeys = Object.fromEntries(Object.keys(fileSizes).map(id => [id, physicalKey(current!.state, id)]));
+  const namespace = `stage:${crypto.randomUUID()}:`;
+  for (const item of items.values()) fileSizes[fileIds.get(item.id)!] = item.storedSize;
+  if (Object.keys(fileSizes).length > MAX_FILE_COUNT) throw new Error('Le nombre maximal de pièces jointes est atteint.');
+  quotaSizes(incoming, manifest, fileSizes);
+  const staged: string[] = [];
+  try {
+    for (const item of items.values()) {
+      const id = fileIds.get(item.id)!;
+      const plaintext = await decryptFile(bundle.files[item.id], item.id, source.key);
+      if (plaintext.byteLength !== item.size) invalid();
+      const bytes = await encryptFile(plaintext.buffer, id, destination.key);
+      current?.guard();
+      const objectKey = namespace + id;
+      staged.push(objectKey);
+      await stageObject(objectKey, bytes);
+      fileKeys[id] = objectKey;
+    }
+    const revision = await activateStagedVault(current?.state.revision, manifest, fileSizes, fileKeys, current?.guard);
+    return { incoming, revision, firstSpace: spaces[0].id };
+  } catch (error) {
+    await removeObjects(staged).catch(() => undefined);
+    throw storageFailure(error);
+  }
+}
+
+export async function importBackupCopy(
+  bundle: EncryptedBundle, source: VaultSecret, destination: { id: string; owner: string; secret: Uint8Array },
+): Promise<VaultSession> {
+  if (await readState()) throw new Error('Un coffre existe sur cet appareil. Ouvrez-le avant d’y copier vos notes.');
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
+  const key = await derive(destination.secret, salt);
+  const result = await stageBackupCopy(bundle, source, {
+    id: destination.id, owner: { provider: 'google', subject: destination.owner }, key, salt,
+  });
+  return session(result.incoming, key, salt, result.revision);
 }
 export async function clearLocalVault(): Promise<void> {
   const db = await database();
@@ -590,11 +683,9 @@ function session(initialData: VaultData, initialKey: CryptoKey, salt: Uint8Array
         // Check the bound before allocating or reading the file.
         if (state.manifest.byteLength + Object.values(state.fileSizes).reduce((sum, size) => sum + size, 0) + file.size + 36 > current.data.preferences.limitBytes) throw new Error('La limite de stockage du coffre est atteinte.');
         const id = crypto.randomUUID();
-        const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
         const plaintext = await file.arrayBuffer(); check(current.epoch);
         if (plaintext.byteLength !== file.size) throw new Error('La taille du fichier a changé pendant sa lecture.');
-        const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: concat(FILE_MAGIC, encoder.encode(id)) }, current.key, plaintext); check(current.epoch);
-        const bytes = concat(FILE_MAGIC, iv, new Uint8Array(ciphertext));
+        const bytes = await encryptFile(plaintext, id, current.key); check(current.epoch);
         const fileSizes = { ...state.fileSizes, [id]: bytes.byteLength };
         quotaSizes(current.data, state.manifest, fileSizes);
         await commit(state.manifest, fileSizes, { [id]: bytes }, current.epoch);
@@ -641,6 +732,21 @@ function session(initialData: VaultData, initialKey: CryptoKey, salt: Uint8Array
         if (state?.revision !== revision) throw conflict();
         if (!bytes) throw new Error('Pièce jointe manquante.');
         return copy(bytes);
+      });
+    },
+    appendBackup(bundle, secret) {
+      return enqueue(async () => {
+        const current = active();
+        const state = await storage(current.epoch);
+        const owner = current.data.owner;
+        if (!owner) throw new Error('Reconnectez-vous avec Google.');
+        const next = await stageBackupCopy(bundle, secret, { id: current.data.id, owner, key: current.key, salt }, {
+          data: current.data, state, guard: () => check(current.epoch),
+        });
+        check(current.epoch);
+        data = next.incoming;
+        revision = next.revision;
+        return next.firstSpace;
       });
     },
     exportBundle() {

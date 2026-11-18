@@ -4,7 +4,7 @@ Une application personnelle pour les mémos, les photos et les fichiers, organis
 
 > Projet personnel développé rapidement à la demande de plusieurs personnes, avec une aide importante de l’IA pour le code, l’interface et la documentation. Il est indépendant de ma formation et de tout travail scolaire. Il ne représente pas une évaluation de mes compétences ou de mon apprentissage.
 
-[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.6/Notes_0.4.6_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.6/Notes_0.4.6_universal.dmg)
+[Ouvrir Notes](https://notes.flion.fr/) · [Télécharger Windows](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.7/Notes_0.4.7_x64-setup.exe) · [Télécharger macOS](https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.7/Notes_0.4.7_universal.dmg)
 
 ## Utilisation
 
@@ -14,9 +14,15 @@ La limite maximale proposée correspond à l’espace libre annoncé par Google.
 
 Aucun mot de passe Notes n’est demandé. Fermer puis rouvrir Notes conserve la connexion et redonne accès à la copie locale, même hors ligne. Le bouton Déconnexion efface la session mémorisée. Sur un autre appareil, le même compte Google retrouve la configuration Drive et la clé de l’espace lorsque l’autorisation a déjà été accordée. Google peut encore demander un consentement ou une reconnexion. Le mode local ne synchronise pas le téléphone.
 
-Les anciennes données d’essai ne sont pas reprises. Aucun parcours de migration ni mot de passe Notes n’est demandé.
+Les anciennes données d’essai ne sont pas reprises. La connexion à Notes ne demande aucun mot de passe supplémentaire. Vous pouvez copier des notes vers un autre compte avec une sauvegarde `.notes`.
 
-**Confidentialité :** la clé est conservée sur l’appareil et, en mode Drive, dans le dossier privé de Notes sur votre compte Google. Google peut techniquement accéder à cette clé. Cette version ne promet donc pas un chiffrement dont Google serait exclu. Les exports `.notes` contiennent également la clé et doivent rester privés.
+**Confidentialité.** La clé est conservée sur l’appareil et, en mode Drive, dans le dossier privé de Notes sur votre compte Google. Google peut techniquement accéder à cette clé. Les sauvegardes standard contiennent également la clé. Pour partager vos notes, vous pouvez exporter une copie protégée par mot de passe, chiffrée sous une clé distincte.
+
+## Copier ses notes vers un autre compte Google
+
+Sur le compte de destination, choisissez **Importer une sauvegarde** à la première ouverture ou dans **Paramètres → Stockage**. Sélectionnez votre fichier `.notes`, vérifiez le compte affiché, puis cliquez sur **Copier les notes**. Les espaces copiés s’ajoutent au coffre existant et le compte d’origine garde ses notes. Si le compte de destination a déjà un coffre Drive, ouvrez-le avant de lancer l’import pour intégrer les notes à ce coffre.
+
+Dans **Paramètres → Stockage → Exporter une copie protégée**, vous pouvez conserver le mot de passe généré ou choisir le vôtre. Vous pouvez aussi indiquer plusieurs adresses Google, séparées par des virgules. Notes vérifie l’adresse du compte connecté quand le fichier est ouvert. Le chiffrement dépend du mot de passe. Une personne qui détient le fichier et le mot de passe peut le déchiffrer avec un autre outil. Partagez le mot de passe séparément du fichier.
 
 Sur Windows, l’accès Google est renouvelé automatiquement. Dans le navigateur, Notes reste connecté lorsque le jeton Google expire ; seule la synchronisation Drive peut demander une nouvelle autorisation. Le modèle Google pour les sites statiques impose alors une action de l’utilisateur : [documentation Google](https://developers.google.com/identity/oauth2/web/guides/use-token-model).
 
@@ -97,3 +103,7 @@ Les fichiers déposés rejoignent le brouillon. Vous pouvez ajouter ou retirer d
 ### Version 0.4.6
 
 Dix thèmes s’ajoutent aux six classiques. Les choix d’apparence s’appliquent immédiatement, même pendant une synchronisation Drive. Un appareil sur une version précédente affiche le thème classique associé à la nouvelle palette. Sur Windows, l’installeur actualise l’icône des raccourcis Notes existants sur le Bureau et dans le menu Démarrer.
+
+### Version 0.4.7
+
+Importez une sauvegarde existante vers un autre compte Google. Les espaces, salons et pièces jointes sont copiés dans le compte de destination. Le nouveau coffre peut être synchronisé avec son propre Drive. Une copie protégée a son propre chiffrement et prend en charge une liste facultative de destinataires dans Notes.

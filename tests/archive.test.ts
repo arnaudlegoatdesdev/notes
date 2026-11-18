@@ -1,7 +1,8 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { packBundle, packSession, unpackBundle } from '../src/archive';
-import { clearLocalVault, createVault, type VaultSession } from '../src/core/vault';
+import { packBundle, packSession, requiresBackupPassword, unpackBundle } from '../src/archive';
+import { clearLocalVault, createVault, inspectManifest, type VaultSession } from '../src/core/vault';
+import { keyBytes, makeAccess } from '../src/access';
 import type { EncryptedBundle, VaultData } from '../src/core/types';
 
 const password = 'un coffre vraiment secret';
@@ -15,6 +16,28 @@ function sample(): EncryptedBundle {
 beforeEach(async () => { await clearLocalVault(); });
 
 describe('encrypted backup format', () => {
+  it('locks a detached copy with a password and checks the verified recipient before loading content', async () => {
+    const data = seed();
+    data.owner = {provider:'google', subject:'source-account'};
+    const access = makeAccess(data.owner.subject, data.id);
+    const session = await createVault(keyBytes(access), data);
+    const photo = await session.addFile(new File(['album bytes'], 'photo.png', {type:'image/png'}));
+    await session.update(current => ({
+      ...current, messages: [{id:crypto.randomUUID(), channelId:data.channels[0].id, text:'Album', createdAt:new Date().toISOString(), attachments:[photo], pinned:true}],
+    }));
+    const archive = file(await packSession(session, access, {password, recipients:['alice@example.test', 'bob@example.test']}));
+    expect(await requiresBackupPassword(archive)).toBe(true);
+    expect(new TextDecoder().decode(await archive.arrayBuffer())).not.toContain(access.key);
+    await expect(unpackBundle(archive)).rejects.toThrow('mot de passe');
+    await expect(unpackBundle(archive, {password:'mot de passe erroné', email:'alice@example.test'})).rejects.toThrow('incorrect');
+    await expect(unpackBundle(archive, {password, email:'eve@example.test'})).rejects.toThrow('destinataires');
+    const { access: protectedKey, files, manifest } = await unpackBundle(archive, {password, email:'BOB@example.test'});
+    expect(protectedKey?.key).not.toBe(access.key);
+    expect(files[photo.id]).not.toEqual(await session.readEncryptedFile(photo.id));
+    await expect(inspectManifest(keyBytes(access), manifest)).rejects.toThrow();
+    expect((await inspectManifest(keyBytes(protectedKey!), manifest)).messages[0].text).toBe('Album');
+  });
+
   it('writes explicitly little-endian integers and round-trips exact typed-array views', async () => {
     const backing = new Uint8Array(100).fill(9);
     const bundle = sample(); bundle.manifest = backing.subarray(10, 62);

@@ -40,7 +40,9 @@ Dans le navigateur, `beforeunload` demande une confirmation tant qu’un enregis
 
 ## Sauvegardes
 
-L’export `.notes` portable contient les objets chiffrés et la clé de l’espace. Le fichier permet donc de récupérer les données et doit rester privé. L’import exige une sauvegarde contenant la clé du compte. Les anciens exports sans clé ne sont pas pris en charge. L’index complet est vérifié avant l’allocation des contenus. L’export regroupé est limité à 512 Mio ; la synchronisation Drive reste progressive.
+Une sauvegarde `.notes` standard contient les objets chiffrés et la clé de l’espace. Elle doit rester privée. Une copie protégée rechiffre les objets avec une clé indépendante et enveloppe cette clé avec un mot de passe. Notes vérifie les éventuelles adresses de destination avant de charger les pièces jointes du fichier. L’index complet est vérifié avant l’allocation des contenus. L’export regroupé est limité à 512 Mio. La synchronisation Drive reste progressive.
+
+Lors d’une copie entre comptes, Notes attribue de nouveaux identifiants aux espaces, salons, messages et pièces jointes, puis rechiffre les fichiers avec la clé du coffre de destination. L’activation atomique du manifeste ajoute le contenu au coffre existant ou initialise un coffre local indépendant. La liaison Drive du coffre de destination reste valable.
 
 ## Windows
 

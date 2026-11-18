@@ -10,7 +10,6 @@ import { connectCloud, type CloudConnection } from "../cloud";
 import type { GoogleUser } from "../auth";
 import type { AccessRecord } from "../core/types";
 import { readCloudAccess } from "../access";
-import { unpackBundle } from "../archive";
 import GoogleDriveIcon from "./GoogleDriveIcon";
 import {
   availableCloudBytes,
@@ -25,7 +24,6 @@ export interface VaultOptions {
   limit: number;
   connection: CloudConnection | null;
   open: boolean;
-  backup?: File;
 }
 export default function VaultSetup({
   user,
@@ -33,12 +31,14 @@ export default function VaultSetup({
   restoreOnly = false,
   onSubmit,
   onChangeAccount,
+  onImport,
 }: {
   user: GoogleUser;
   busy: boolean;
   restoreOnly?: boolean;
   onSubmit: (options: VaultOptions) => Promise<void>;
   onChangeAccount?: () => void;
+  onImport?: () => void;
 }) {
   const [stage, setStage] = useState<"choice" | "limit">("choice");
   const [storage, setStorage] = useState<"drive" | "local">("drive");
@@ -161,42 +161,10 @@ export default function VaultSetup({
               ? "Connecter Google Drive"
               : "Continuer en local"}
           </button>
-          {restoreOnly && (
-            <label className="backup-input">
-              Ou importer une sauvegarde
-              <input
-                type="file"
-                accept=".notes,.flion"
-                disabled={waiting}
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  setWorking(true);
-                  setError("");
-                  void unpackBundle(file)
-                    .then(async (bundle) => {
-                      if (bundle.access)
-                        await onSubmit({
-                          access: bundle.access,
-                          connection: null,
-                          open: true,
-                          backup: file,
-                          limit: GB,
-                        });
-                      else
-                        throw new Error(
-                          "Cette sauvegarde n’est pas compatible avec Notes.",
-                        );
-                    })
-                    .catch((e) =>
-                      setError(
-                        e instanceof Error ? e.message : "Sauvegarde invalide.",
-                      ),
-                    )
-                    .finally(() => setWorking(false));
-                }}
-              />
-            </label>
+          {onImport && (
+            <button type="button" className="text-button center" disabled={waiting} onClick={onImport}>
+              Importer une sauvegarde
+            </button>
           )}
           {onChangeAccount && (
             <button

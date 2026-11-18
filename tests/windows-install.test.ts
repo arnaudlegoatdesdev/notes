@@ -27,12 +27,12 @@ describe("direct Windows installation offer", () => {
   });
   it("accepts only the current or newer owned installer, never a release page or old version", () => {
     const release = {
-      tag_name: "v0.4.6",
+      tag_name: "v0.4.7",
       assets: [
         {
-          name: "Notes_0.4.6_x64-setup.exe",
+          name: "Notes_0.4.7_x64-setup.exe",
           browser_download_url:
-            "https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.6/Notes_0.4.6_x64-setup.exe",
+            "https://github.com/arnaudlegoatdesdev/notes/releases/download/v0.4.7/Notes_0.4.7_x64-setup.exe",
         },
       ],
     };

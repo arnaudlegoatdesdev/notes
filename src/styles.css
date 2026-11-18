@@ -1950,16 +1950,20 @@ input[type="file"] {
   color: var(--subtle);
   margin-top: 28px;
 }
-.backup-input {
-  display: block !important;
-  font-size: 0.7rem !important;
-  line-height: 1.6;
-  color: var(--muted);
+.backup-form {
+  display: grid;
+  gap: 10px;
 }
-.backup-input input {
-  display: block;
-  width: 100%;
-  margin-top: 8px;
+.backup-form .modal-copy,
+.backup-form .field-note,
+.backup-form .modal-actions {
+  margin: 4px 0;
+}
+.backup-form .text-button {
+  justify-self: start;
+}
+.backup-form textarea {
+  resize: vertical;
 }
 .image-preview {
   background: var(--side);

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
 import { webcrypto } from "node:crypto";
+import { Blob as NodeBlob, File as NodeFile } from "node:buffer";
 import { runInThisContext } from "node:vm";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -22,11 +23,13 @@ import { driveGrant } from "../src/cloud/google";
 import {
   makeAccess,
   keyBytes,
+  localAccess,
   rememberStorage,
   saveAccess,
   publishAccess,
 } from "../src/access";
 import { syncVault, writeSyncState, readSyncState } from "../src/sync-v2";
+import { packSession } from "../src/archive";
 const user = {
   id: "google-flow-person",
   name: "Test",
@@ -90,6 +93,75 @@ async function login() {
   );
 }
 describe("Notes account and empty workspace flow", () => {
+  it.each([false, true])("copies a 0.4.6 backup to another Google account (existing destination: %s)", async (existing) => {
+    vi.stubGlobal("Blob", NodeBlob);
+    const source = {id:"original-google-account", email:"source@example.test"};
+    selectVaultAccount(source.id);
+    await clearLocalVault();
+    const initial = createData();
+    initial.owner = {provider:"google", subject:source.id};
+    initial.channels.push({id:crypto.randomUUID(), spaceId:initial.id, name:"Vacances", description:"", icon:"image"});
+    initial.spaces![0].name = "Souvenirs";
+    initial.spaces![0].channelOrder = [initial.channels[0].id];
+    const sourceAccess = makeAccess(source.id, initial.id);
+    const sourceSession = await createVault(keyBytes(sourceAccess), initial);
+    const photo = await sourceSession.addFile(new NodeFile(["fichier copié"], "album.png", {type:"image/png"}) as unknown as File);
+    const entry = {id:crypto.randomUUID(), channelId:initial.channels[0].id, text:"Carnet du compte d’origine", createdAt:new Date().toISOString(), attachments:[photo], pinned:true};
+    await sourceSession.update(current => ({ ...current, messages:[entry] }));
+    const archive = await packSession(sourceSession, sourceAccess);
+    const file = new NodeFile([new Uint8Array(await archive.arrayBuffer())], "Notes-0.4.6.notes");
+    sourceSession.lock();
+    selectVaultAccount(user.id);
+    let destination = createData();
+    if (existing) {
+      destination.owner = {provider:"google", subject:user.id};
+      destination.spaces![0].name = "Mon coffre existant";
+      const channel = {id:crypto.randomUUID(), spaceId:destination.id, name:"Personnel", description:"", icon:"hash" as const};
+      destination.channels.push(channel);
+      destination.messages.push({...entry, id:crypto.randomUUID(), channelId:channel.id, text:"Note déjà présente", attachments:[]});
+      const record = makeAccess(user.id, destination.id);
+      await saveAccess(record);
+      const vault = await createVault(keyBytes(record), destination);
+      destination = vault.data;
+      vault.lock();
+      rememberStorage(user.id, "local");
+    }
+    vi.mocked(restoreGoogleSession).mockResolvedValue(user);
+    render(<App />);
+    if (existing) {
+      fireEvent.click(await screen.findByRole("button", {name:"Paramètres"}));
+      fireEvent.click(screen.getByRole("button", {name:"Stockage"}));
+    }
+    fireEvent.click(await screen.findByRole("button", {name:"Importer une sauvegarde"}));
+    fireEvent.change(screen.getByLabelText("Fichier de sauvegarde Notes"), {target:{files:[file]}});
+    const verify = await screen.findByRole<HTMLButtonElement>("button", {name:"Vérifier le fichier"});
+    await waitFor(() => expect(verify.disabled).toBe(false));
+    fireEvent.click(verify);
+    fireEvent.click(await screen.findByRole("button", {name:"Copier les notes"}));
+    await screen.findByText("Notes copiées dans ce compte.");
+    const records = await localAccess(user.id);
+    const manifest = (await localManifest())!;
+    const readable = await Promise.all(records.map(async record =>
+      await inspectManifest(keyBytes(record), manifest).then(() => record).catch(() => null)));
+    const copied = await unlockVault(keyBytes(readable.find(record => record !== null)!));
+    expect(copied.data.owner?.subject).toBe(user.id);
+    expect(copied.data.id).not.toBe(initial.id);
+    if (existing) {
+      expect(copied.data.id).toBe(destination.id);
+      expect(copied.data.messages[0]).toEqual(destination.messages[0]);
+    }
+    const imported = copied.data.messages.find(message => message.text === entry.text)!;
+    expect(imported.id).not.toBe(entry.id);
+    expect(imported.pinned).toBe(true);
+    expect(imported.attachments[0].id).not.toBe(photo.id);
+    expect(await (await copied.readFile(imported.attachments[0])).text()).toBe("fichier copié");
+    expect(copied.data.spaces!.find(space => space.name === "Souvenirs")?.channelOrder).toEqual([imported.channelId]);
+    selectVaultAccount(source.id);
+    expect((await inspectManifest(keyBytes(sourceAccess), (await localManifest())!)).messages[0]).toEqual(entry);
+    await clearLocalVault();
+    selectVaultAccount(user.id);
+  });
+
   it("attaches a pasted image without losing the draft, sends it once, and leaves text paste alone", async () => {
     const initial=createData(); initial.owner={provider:"google",subject:user.id};
     initial.channels.push({id:crypto.randomUUID(),spaceId:initial.id,name:"Personnel",description:"",icon:"hash"});
