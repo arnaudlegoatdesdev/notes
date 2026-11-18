@@ -49,8 +49,6 @@ jobs:
             ~/.cargo/git/
             src-tauri/target/
           key: macos-universal-1.90-${{ hashFiles('src-tauri/Cargo.lock') }}-v1
-          restore-keys: |
-            macos-universal-1.90-
           restore-keys: macos-universal-1.90-
       - run: npm ci
       - name: Tester l’interface sur le runner Mac
