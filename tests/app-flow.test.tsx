@@ -5,6 +5,7 @@ import { Blob as NodeBlob, File as NodeFile } from "node:buffer";
 import { runInThisContext } from "node:vm";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -84,6 +85,8 @@ beforeEach(async () => {
 });
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  window.history.replaceState(null, "", "/");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -93,6 +96,46 @@ async function login() {
   );
 }
 describe("Notes account and empty workspace flow", () => {
+  it("offers a reload and a local-only startup if the remembered session never responds", async () => {
+    vi.useFakeTimers();
+    vi.mocked(restoreGoogleSession).mockImplementation(() => new Promise(() => {}));
+    render(<App />);
+    expect(screen.getByRole("status", {name: "Ouverture de Notes"})).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(8_000));
+    const reload = screen.getByRole<HTMLAnchorElement>("link", {name:"Recharger Notes"});
+    const local = screen.getByRole<HTMLAnchorElement>("link", {name:"Ouvrir sans Drive"});
+    expect(new URL(reload.href).searchParams.has("relance")).toBe(true);
+    expect(new URL(local.href).searchParams.get("sans-drive")).toBe("1");
+    expect(connectCloud).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("opens a saved vault without waiting for Drive (local-only URL: %s)", async (withoutDrive) => {
+    const data = createData();
+    data.owner = {provider:"google", subject:user.id};
+    data.channels.push({id:crypto.randomUUID(), name:"Personnel", description:"", icon:"hash"});
+    const record = makeAccess(user.id, data.id);
+    await saveAccess(record);
+    const session = await createVault(keyBytes(record), data);
+    session.lock();
+    rememberStorage(user.id, "drive");
+    vi.mocked(restoreGoogleSession).mockResolvedValue(user);
+    vi.mocked(driveGrant).mockReturnValue({accessToken:"cached", expiresIn:3600});
+    vi.mocked(connectCloud).mockImplementation(() => new Promise(() => {}));
+    if (withoutDrive) window.history.replaceState(null, "", "/?sans-drive=1");
+    render(<App />);
+    const composer = await screen.findByRole("textbox", {name:"Écrire dans Personnel"});
+    const attach = screen.getByRole<HTMLButtonElement>("button", {name:"Ajouter des fichiers"});
+    await waitFor(() => expect(attach.disabled).toBe(false));
+    fireEvent.change(composer, {target:{value:"Une note locale"}});
+    fireEvent.click(screen.getByRole("button", {name:"Envoyer le message"}));
+    expect(await screen.findByText("Une note locale")).toBeTruthy();
+    await waitFor(async () => {
+      const saved = await inspectManifest(keyBytes(record), (await localManifest())!);
+      expect(saved.messages[0]?.text).toBe("Une note locale");
+    });
+    expect(connectCloud).toHaveBeenCalledTimes(withoutDrive ? 0 : 1);
+    expect(localStorage.getItem(`notes.storage.${user.id}`)).toBe("drive");
+  });
   it.each([false, true])("copies a 0.4.6 backup to another Google account (existing destination: %s)", async (existing) => {
     vi.stubGlobal("Blob", NodeBlob);
     const source = {id:"original-google-account", email:"source@example.test"};

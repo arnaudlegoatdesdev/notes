@@ -10,6 +10,7 @@ import {
 import { restoreGoogleSession, signOutGoogle } from "../src/auth";
 import { driveGrant, forgetGoogleGrant } from "../src/cloud/google";
 import { TokenConnection } from "../src/cloud/http";
+import { openLocalDatabase } from "../src/open-local-database";
 const user = {
   id: "session-person",
   email: "private@example.com",
@@ -41,6 +42,24 @@ async function storedValues(): Promise<unknown[]> {
   }
 }
 describe("persistent browser session", () => {
+  it.each(["blocked", "silent"])("releases the local database open when the browser is %s and closes a late connection", async (kind) => {
+    const close = vi.fn();
+    const pending: {onblocked?: () => void; onsuccess?: () => void; result: {close: () => void}} = {result: {close}};
+    const open = vi.spyOn(indexedDB, "open").mockReturnValueOnce(pending as unknown as IDBOpenDBRequest);
+    vi.useFakeTimers();
+    try {
+      const attempt = openLocalDatabase("notes-session-test", 1, () => {});
+      const failed = expect(attempt).rejects.toThrow(kind === "blocked" ? "Un autre onglet" : "ne répond pas");
+      if (kind === "blocked") pending.onblocked?.();
+      else await vi.advanceTimersByTimeAsync(12_000);
+      await failed;
+      pending.onsuccess?.();
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+      open.mockRestore();
+    }
+  });
   it("restores the saved identity and usable Drive grant from encrypted browser storage", async () => {
     await saveWebLogin(user, credentials);
     forgetGoogleGrant();

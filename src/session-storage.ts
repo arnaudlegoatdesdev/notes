@@ -1,6 +1,7 @@
 import type { GoogleUser } from "./auth";
 import type { GoogleCredentials } from "./cloud/google";
 import {googlePicture} from "./google-picture";
+import { openLocalDatabase } from "./open-local-database";
 export interface SavedLogin {
   version: 1;
   user: GoogleUser;
@@ -19,9 +20,7 @@ function request<T>(req: IDBRequest<T>): Promise<T> {
   });
 }
 async function database(): Promise<IDBDatabase> {
-  const req = indexedDB.open(DB, 1);
-  req.onupgradeneeded = () => req.result.createObjectStore("session");
-  return request(req);
+  return openLocalDatabase(DB, 1, db => { db.createObjectStore("session"); });
 }
 function done(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -143,8 +142,8 @@ function readEnvelope(db: IDBDatabase) {
 
 async function decryptLogin(key: CryptoKey, envelope: LoginEnvelope): Promise<SavedLogin | null> {
   if (
-    envelope.iv.byteLength !== 12 ||
-    envelope.sealed.byteLength < 16 ||
+    envelope.iv?.byteLength !== 12 ||
+    !envelope.sealed || envelope.sealed.byteLength < 16 ||
     envelope.sealed.byteLength > 65552
   )
     return null;

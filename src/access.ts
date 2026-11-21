@@ -1,5 +1,6 @@
 import type { AccessRecord } from "./core/types";
 import type { CloudConnection, CloudFile } from "./cloud";
+import { openLocalDatabase } from "./open-local-database";
 const uuid =
   /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const profilePattern = /^notes-account-([a-f0-9-]{36})\.json$/;
@@ -37,12 +38,8 @@ export function makeAccess(
   });
 }
 async function db(): Promise<IDBDatabase> {
-  const req = indexedDB.open("notes-account-v1", 1);
-  req.onupgradeneeded = () =>
-    req.result.createObjectStore("keys", { keyPath: "vaultId" });
-  return new Promise((resolve, reject) => {
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+  return openLocalDatabase("notes-account-v1", 1, database => {
+    database.createObjectStore("keys", { keyPath: "vaultId" });
   });
 }
 export async function saveAccess(record: AccessRecord): Promise<void> {
@@ -83,7 +80,14 @@ export async function localAccess(owner: string): Promise<AccessRecord[]> {
       r.onsuccess = () => resolve(r.result);
       r.onerror = () => reject(r.error);
     });
-    return all.map(validateAccess).filter((v) => v.owner === owner);
+    return all.flatMap((entry) => {
+      try {
+        const record = validateAccess(entry);
+        return record.owner === owner ? [record] : [];
+      } catch {
+        return [];
+      }
+    });
   } finally {
     database.close();
   }

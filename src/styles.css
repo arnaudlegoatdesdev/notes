@@ -2669,6 +2669,11 @@ input[type="file"] {
   padding: 32px;
   box-shadow: 0 12px 50px #0002;
 }
+.startup-recovery-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
 .access-card .brand-title {
   margin-bottom: 32px;
   justify-content: flex-start;

@@ -4,6 +4,7 @@ import { isClassicTheme } from './themes';
 import { withSpaces } from '../spaces';
 import type { Attachment, EncryptedBundle, VaultData } from './types';
 import { transferAttachments } from '../attachment-transfers';
+import { openLocalDatabase } from '../open-local-database';
 
 const DB_NAME = 'notes-vault-v2';
 let accountScope = '';
@@ -68,10 +69,10 @@ function completion(transaction: IDBTransaction): Promise<void> {
   });
 }
 async function database(): Promise<IDBDatabase> {
-  if (typeof indexedDB === 'undefined') throw new Error('Le stockage local sécurisé est indisponible dans ce navigateur.');
-  const req = indexedDB.open(DB_NAME + accountScope, DB_VERSION);
-  req.onupgradeneeded = () => { req.result.createObjectStore('state'); req.result.createObjectStore('files'); };
-  return request(req);
+  return openLocalDatabase(DB_NAME + accountScope, DB_VERSION, db => {
+    db.createObjectStore('state');
+    db.createObjectStore('files');
+  });
 }
 async function readState(): Promise<StoredState | undefined> {
   const db = await database();

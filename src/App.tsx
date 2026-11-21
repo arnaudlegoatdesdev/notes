@@ -277,6 +277,11 @@ export default function App() {
   const [mode, setMode] = useState<"login" | "setup" | "vault" | "loading">(
     "loading",
   );
+  const [startupSlow, setStartupSlow] = useState(false);
+  const [startupError, setStartupError] = useState("");
+  const [startWithoutDrive] = useState(() =>
+    !isDesktop && new URLSearchParams(window.location.search).get("sans-drive") === "1",
+  );
   const session = useRef<VaultSession | null>(null);
   const access = useRef<AccessRecord | null>(null);
   const syncDone = useRef<Promise<void> | null>(null);
@@ -453,13 +458,21 @@ export default function App() {
     composers.current.clear();
     if (record) access.current = record;
     setData(s.data);
-    setUsed(await s.usedBytes());
     setMode("vault");
+    setUsed(0);
+    void s.usedBytes().then(value => {
+      if (session.current === s) setUsed(value);
+    }).catch(() => undefined);
     setActiveSpace(spacesOf(s.data)[0].id);
     setActive(s.data.channels[0]?.id || "");
     setQueuedByChannel({});
     setDraft("");
   };
+  useEffect(() => {
+    if (isDesktop || mode !== "loading") return;
+    const timer = setTimeout(() => setStartupSlow(true), 8_000);
+    return () => clearTimeout(timer);
+  }, [mode]);
   useEffect(() => {
     let canceled = false;
     busyRef.current = true;
@@ -476,23 +489,21 @@ export default function App() {
           await resumeAccount(user);
         } catch (error) {
           if (!canceled) {
-            setMode("setup");
-            setNotice(
-              error instanceof Error
-                ? error.message
-                : "Google Drive est indisponible.",
-            );
+            const message = error instanceof Error ? error.message : "Impossible d’ouvrir Notes.";
+            if (isDesktop) {
+              setMode("setup");
+              setNotice(message);
+            } else setStartupError(message);
           }
         }
       })
       .catch((error) => {
         if (!canceled) {
-          setMode("login");
-          setNotice(
-            error instanceof Error
-              ? error.message
-              : "Impossible de retrouver la connexion.",
-          );
+          const message = error instanceof Error ? error.message : "Impossible de retrouver la connexion.";
+          if (isDesktop) {
+            setMode("login");
+            setNotice(message);
+          } else setStartupError(message);
         }
       })
       .finally(() => {
@@ -943,82 +954,86 @@ export default function App() {
           const info = await inspectManifest(keyBytes(record), manifest);
           assertVaultOwner(info, user.id);
           if (info.id !== record.vaultId) continue;
-          local = await unlockVault(keyBytes(record));
-          await replaceSession(local, record, user);
+          const unlocked = await unlockVault(keyBytes(record));
+          await replaceSession(unlocked, record, user);
+          local = unlocked;
           break;
         } catch {
           /* A saved key can belong to an older imported space. */
         }
       }
     }
-    if (
-      storageChoice(user.id) !== "local" &&
-      (driveGrant(user.id) || (isDesktop && storageChoice(user.id) === "drive"))
-    ) {
-      let conn: CloudConnection;
-      try {
-        conn = await connectCloud("google", user.id, { interactive: false });
-      } catch (error) {
-        if (local) {
-          setSyncStatus("error");
-          setNeedsReconnect(error instanceof CloudError && error.code === "auth");
-          setSyncError(
-            error instanceof Error
-              ? error.message
-              : "Reconnectez Google Drive pour reprendre la synchronisation.",
-          );
-          return;
-        }
-        throw error;
+    if (startWithoutDrive) {
+      if (local) setNotice("Copie locale ouverte. Vous pouvez reconnecter Drive depuis Stockage.");
+      else {
+        setMode("setup");
+        setNotice("Il n’y a pas de copie locale pour ce compte sur cet appareil.");
       }
-      try {
-        const files = await conn.list(),
-          record = await readCloudAccess(conn, user.id, files);
-        if (record) {
-          await saveAccess(record);
-          if (!local) {
-            const next = manifest
-              ? await unlockVault(keyBytes(record))
-              : await openCloudVault(conn, keyBytes(record), user.id);
-            if (next.data.id !== record.vaultId) {
-              next.lock();
-              throw new Error(
-                "La copie locale appartient à un autre espace. Exportez-la avant de continuer.",
-              );
+      return;
+    }
+
+    const preference = storageChoice(user.id);
+    if (preference !== "local" && (driveGrant(user.id) || (isDesktop && preference === "drive"))) {
+      const previousConnection = cloudConnection.current;
+      const isCurrent = () => !local || (session.current === local &&
+        cloudConnection.current === previousConnection && storageChoice(user.id) === preference);
+      const restoreDrive = async () => {
+        let conn: CloudConnection | undefined;
+        let attached = false;
+        try {
+          conn = await connectCloud("google", user.id, { interactive: false });
+          if (!isCurrent()) return;
+
+          // A configured local vault is usable while the first sync checks Drive.
+          if (!local || preference !== "drive") {
+            const record = await readCloudAccess(conn, user.id);
+            if (!isCurrent()) return;
+            if (!record) {
+              if (!local) setMode("setup");
+              return;
             }
-            await replaceSession(next, record, user);
-          } else if (local.data.id !== record.vaultId)
-            throw new Error(
-              "Drive contient un autre espace. La copie locale est conservée.",
-            );
+            if (local && local.data.id !== record.vaultId) {
+              throw new Error("Drive contient un autre espace. La copie locale est conservée.");
+            }
+            await saveAccess(record);
+            if (!isCurrent()) return;
+            if (!local) {
+              const next = manifest
+                ? await unlockVault(keyBytes(record))
+                : await openCloudVault(conn, keyBytes(record), user.id);
+              if (next.data.id !== record.vaultId) {
+                next.lock();
+                throw new Error("La copie locale appartient à un autre espace. Exportez-la avant de continuer.");
+              }
+              await replaceSession(next, record, user);
+            }
+          }
+
           rememberStorage(user.id, "drive");
+          cloudConnection.current = conn;
           setConnection(conn);
           setNeedsReconnect(false);
           setSyncError("");
           setSyncStatus("pending");
-          return;
+          attached = true;
+        } catch (error) {
+          if (!local) throw error;
+          if (isCurrent()) {
+            setSyncStatus("error");
+            setNeedsReconnect(error instanceof CloudError && error.code === "auth");
+            setSyncError(error instanceof Error ? error.message : "Drive indisponible.");
+          }
+        } finally {
+          if (!attached) await conn?.disconnect();
         }
-        if (local && storageChoice(user.id) === "drive") {
-          setConnection(conn);
-          setNeedsReconnect(false);
-          setSyncError("");
-          setSyncStatus("pending");
-          return;
-        }
-        await conn.disconnect();
-      } catch (e) {
-        await conn.disconnect();
-        if (local) {
-          setSyncStatus("error");
-          setNeedsReconnect(e instanceof CloudError && e.code === "auth");
-          setSyncError(e instanceof Error ? e.message : "Drive indisponible.");
-          return;
-        }
-        throw e;
-      }
+      };
+
+      if (local && !isDesktop) void restoreDrive();
+      else await restoreDrive();
+      return;
     }
     if (local) {
-      if (storageChoice(user.id) === "drive") {
+      if (preference === "drive") {
         setSyncStatus("error");
         setNeedsReconnect(true);
         setSyncError(
@@ -1163,9 +1178,31 @@ export default function App() {
       <BackupImport user={identity} hasVault={mode === "vault"} busy={busy} onImport={importBackup} />
     </Modal>
   );
-  if (mode === "loading")
+  if (mode === "loading" && (startupSlow || startupError)) {
+    const retry = new URL(window.location.href);
+    retry.searchParams.set("relance", Date.now().toString());
+    retry.searchParams.delete("sans-drive");
+    const local = new URL(retry);
+    local.searchParams.set("sans-drive", "1");
     return (
       <div className="access-screen">
+        <section className="access-card">
+          <div className="brand-title"><Brand /><span>Notes</span></div>
+          <h1>{startupError ? "Impossible d’ouvrir Notes" : "L’ouverture prend plus de temps que prévu"}</h1>
+          <p role={startupError ? "alert" : "status"}>
+            {startupError || "Vous pouvez recharger Notes ou ouvrir votre copie locale."}
+          </p>
+          <div className="startup-recovery-actions">
+            {!startWithoutDrive && <a className="button primary full" href={local.href}>Ouvrir sans Drive</a>}
+            <a className="button secondary full" href={retry.href}>Recharger Notes</a>
+          </div>
+        </section>
+      </div>
+    );
+  }
+  if (mode === "loading")
+    return (
+      <div className="access-screen" role="status" aria-label="Ouverture de Notes">
         <Brand />
         <LoaderCircle size={22} className="spin" />
       </div>

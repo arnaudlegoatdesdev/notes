@@ -28,6 +28,8 @@ Sur Windows et macOS, l’accès Google est renouvelé automatiquement. Dans le 
 
 Pour utiliser le stockage d’un autre compte, choisissez **Changer de compte Google** dans la fenêtre de connexion Drive. Connectez-vous ensuite à Notes avec le compte qui possède ce Drive.
 
+Si l’ouverture du site se bloque, l’écran propose de recharger Notes ou d’ouvrir la copie locale. Le lien **Ouvrir sans Drive** utilise les données déjà présentes dans le navigateur. Vous pourrez ensuite reprendre la synchronisation depuis **Paramètres → Stockage**. [Ouvrir sans Drive](https://notes.flion.fr/?sans-drive=1)
+
 ## Fonctionnalités
 
 - Salons personnalisables, messages modifiables et supprimables.
