@@ -24,7 +24,9 @@ Sur le compte de destination, choisissez **Importer une sauvegarde** à la premi
 
 Dans **Paramètres → Stockage → Exporter une copie protégée**, vous pouvez conserver le mot de passe généré ou choisir le vôtre. Vous pouvez aussi indiquer plusieurs adresses Google, séparées par des virgules. Notes vérifie l’adresse du compte connecté quand le fichier est ouvert. Le chiffrement dépend du mot de passe. Une personne qui détient le fichier et le mot de passe peut le déchiffrer avec un autre outil. Partagez le mot de passe séparément du fichier.
 
-Sur Windows, l’accès Google est renouvelé automatiquement. Dans le navigateur, Notes reste connecté lorsque le jeton Google expire ; seule la synchronisation Drive peut demander une nouvelle autorisation. Le modèle Google pour les sites statiques impose alors une action de l’utilisateur : [documentation Google](https://developers.google.com/identity/oauth2/web/guides/use-token-model).
+Sur Windows et macOS, l’accès Google est renouvelé automatiquement. Dans le navigateur, Notes réutilise le jeton Drive tant qu’il est valide. À son expiration, la session Notes et la copie locale restent accessibles. Google demande un clic pour reprendre la synchronisation. [Documentation Google](https://developers.google.com/identity/oauth2/web/guides/use-token-model)
+
+Pour utiliser le stockage d’un autre compte, choisissez **Changer de compte Google** dans la fenêtre de connexion Drive. Connectez-vous ensuite à Notes avec le compte qui possède ce Drive.
 
 ## Fonctionnalités
 

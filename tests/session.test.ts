@@ -5,6 +5,7 @@ import {
   readWebLogin,
   saveWebLogin,
   updateWebCredentials,
+  updateWebProfile,
 } from "../src/session-storage";
 import { restoreGoogleSession, signOutGoogle } from "../src/auth";
 import { driveGrant, forgetGoogleGrant } from "../src/cloud/google";
@@ -76,6 +77,29 @@ describe("persistent browser session", () => {
     expect((await readWebLogin())?.credentials?.accessToken).toBe(
       credentials.accessToken,
     );
+  });
+  it("keeps a fresh Drive grant when a slower profile update commits afterward", async () => {
+    await saveWebLogin(user, { ...credentials, scope: "openid" });
+    const encrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+    let started!: () => void, unblock!: () => void;
+    const waiting = new Promise<void>(resolve => { started = resolve; });
+    const stalled = new Promise<void>(resolve => { unblock = resolve; });
+    const picture = "https://lh3.googleusercontent.com/a/portrait";
+    vi.spyOn(crypto.subtle, "encrypt").mockImplementationOnce(async (...args) => {
+      started();
+      await stalled;
+      return encrypt(...args);
+    });
+    const profile = updateWebProfile({...user, picture});
+    await waiting;
+    try {
+      await updateWebCredentials(user.id, {...credentials, accessToken:"new-drive-token"});
+    } finally {
+      unblock();
+    }
+    await profile;
+    expect(await restoreGoogleSession()).toEqual({...user, picture});
+    expect(driveGrant(user.id)?.accessToken).toBe("new-drive-token");
   });
 });
 class Connection extends TokenConnection {

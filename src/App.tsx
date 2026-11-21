@@ -348,6 +348,7 @@ export default function App() {
     error: setNotice,
   });
   const [needsReconnect, setNeedsReconnect] = useState(false);
+  const [driveConnectError, setDriveConnectError] = useState("");
   const [modal, setModal] = useState<
     "onboarding" | "settings" | "channel" | "spaces" | "space" | "connect" | "import" | "export" | null
   >(null);
@@ -602,8 +603,10 @@ export default function App() {
     async (conn = connection, force = false) => {
       if (
         !conn ||
+        cloudConnection.current !== conn ||
         !session.current ||
         syncLock.current ||
+        (!isDesktop && needsReconnect && !force) ||
         (busyRef.current && !force) ||
         (syncBlock.current && !force)
       )
@@ -636,6 +639,7 @@ export default function App() {
         setQuota(result.quota);
         setSyncStatus(result.pending || readSyncState()?.dirty || changes.current?.unsaved ? "pending" : "synced");
       } catch (e) {
+        if (cloudConnection.current !== conn) return;
         lastSyncError.current = e instanceof Error ? e : new Error("Synchronisation indisponible.");
         if (e instanceof SyncFailure) {
           session.current = e.session;
@@ -655,7 +659,7 @@ export default function App() {
         resolveSync();
       }
     },
-    [connection, identity?.id],
+    [connection, identity?.id, needsReconnect],
   );
   useEffect(() => {
     if (connection && syncStatus === "pending" && !busy && !syncBlock.current) {
@@ -738,6 +742,7 @@ export default function App() {
     setCloudBytes(0);
     setQuota(null);
     setSyncError("");
+    setNeedsReconnect(false);
     setSyncStatus("local");
     setMode("login");
   };
@@ -956,7 +961,7 @@ export default function App() {
       } catch (error) {
         if (local) {
           setSyncStatus("error");
-          setNeedsReconnect(true);
+          setNeedsReconnect(error instanceof CloudError && error.code === "auth");
           setSyncError(
             error instanceof Error
               ? error.message
@@ -988,12 +993,15 @@ export default function App() {
             );
           rememberStorage(user.id, "drive");
           setConnection(conn);
-          setQuota(await conn.quota());
+          setNeedsReconnect(false);
+          setSyncError("");
           setSyncStatus("pending");
           return;
         }
         if (local && storageChoice(user.id) === "drive") {
           setConnection(conn);
+          setNeedsReconnect(false);
+          setSyncError("");
           setSyncStatus("pending");
           return;
         }
@@ -1001,7 +1009,9 @@ export default function App() {
       } catch (e) {
         await conn.disconnect();
         if (local) {
-          setNotice(e instanceof Error ? e.message : "Drive indisponible.");
+          setSyncStatus("error");
+          setNeedsReconnect(e instanceof CloudError && e.code === "auth");
+          setSyncError(e instanceof Error ? e.message : "Drive indisponible.");
           return;
         }
         throw e;
@@ -1019,6 +1029,33 @@ export default function App() {
     }
     setMode("setup");
   };
+  const openDriveConnection = () => {
+    setDriveConnectError("");
+    setModal("connect");
+  };
+  const connectDrive = () =>
+    void run(async () => {
+      if (!identity || !access.current) return;
+      setDriveConnectError("");
+      let next: CloudConnection | undefined;
+      try {
+        next = await connectCloud("google", identity.id, { renewAuthorization: !isDesktop });
+        await publishAccess(next, access.current);
+        rememberStorage(identity.id, "drive");
+        if (!readSyncState())
+          writeSyncState({provider: "google", head: null, dirty: true});
+        void cloudConnection.current?.disconnect();
+        cloudConnection.current = next;
+        setConnection(next);
+        setNeedsReconnect(false);
+        setSyncError("");
+        setModal(null);
+        setSyncStatus("pending");
+      } catch (error) {
+        await next?.disconnect();
+        setDriveConnectError(error instanceof Error ? error.message : "Impossible de connecter Google Drive.");
+      }
+    });
   const finishSetup = (opts: VaultOptions) =>
     run(async () => {
       await changes.current?.flush();
@@ -1057,6 +1094,8 @@ export default function App() {
       await replaceSession(next, record);
       rememberStorage(identity.id, opts.connection ? "drive" : "local");
       setConnection(opts.connection);
+      setNeedsReconnect(false);
+      setSyncError("");
       setModal(null);
       setSyncStatus(opts.connection ? "pending" : "local");
     });
@@ -1422,7 +1461,9 @@ export default function App() {
             <span>{syncError}</span>
             <button
               onClick={() =>
-                needsReconnect ? setModal("connect") : void synchronize()
+                needsReconnect ? openDriveConnection() : connection
+                  ? void synchronize()
+                  : void run(() => resumeAccount(identity))
               }
               disabled={busy}
             >
@@ -1473,7 +1514,7 @@ export default function App() {
             <button
               className={`sync-badge ${syncStatus === "error" ? "error" : ""}`}
               onClick={() =>
-                connection ? void synchronize() : setModal("connect")
+                connection && !needsReconnect ? void synchronize() : openDriveConnection()
               }
               disabled={busy}
             >
@@ -2088,41 +2129,29 @@ export default function App() {
         />
       )}
       {modal === "connect" && (
-        <Modal title="Synchroniser mes notes" onClose={() => setModal(null)}>
+        <Modal title="Synchroniser mes notes" onClose={() => { if (!busyRef.current) setModal(null); }}>
           <p className="modal-copy">
-            Retrouvez vos notes sur votre téléphone avec Google Drive.
+            Notes utilise le Drive de votre compte Google <strong>{identity.email}</strong>.
           </p>
           <button
             className="provider-card"
             disabled={busy}
-            onClick={() =>
-              void run(async () => {
-                const conn = await connectCloud("google", identity.id);
-                if (!access.current)
-                  throw new Error("Reconnectez-vous à Notes.");
-                await publishAccess(conn, access.current);
-                rememberStorage(identity.id, "drive");
-                const nextQuota = await conn.quota();
-                setConnection(conn);
-                setQuota(nextQuota);
-                setModal(null);
-                setSyncStatus("pending");
-                if (!readSyncState())
-                  writeSyncState({
-                    provider: "google",
-                    head: null,
-                    dirty: true,
-                  });
-              })
-            }
+            onClick={connectDrive}
           >
             <ProviderIcon provider="google" />
             <div>
               <strong>Google Drive</strong>
-              <span>Activer la synchronisation</span>
+              <span>{busy ? "Connexion en cours…" : "Activer la synchronisation"}</span>
             </div>
             <ChevronRight size={18} />
           </button>
+          {busy && <p className="field-note" role="status">Terminez la connexion dans la fenêtre Google si elle est ouverte.</p>}
+          {driveConnectError && <p className="access-error" role="alert">{driveConnectError}</p>}
+          <div className="modal-actions">
+            <button type="button" className="text-button" onClick={signOut} disabled={busy}>
+              Changer de compte Google
+            </button>
+          </div>
         </Modal>
       )}
       {modal === "settings" && (
@@ -2141,7 +2170,7 @@ export default function App() {
           }))}
           onExport={() => exportBackup()}
           onProtectedExport={() => setModal("export")}
-          onConnect={() => setModal("connect")}
+          onConnect={openDriveConnection}
           onSignOut={signOut}
           onImport={() => setModal("import")}
           onOpenDrive={() => {
@@ -2156,10 +2185,14 @@ export default function App() {
           }}
           onDisconnect={() => {
             rememberStorage(identity.id, "local");
+            cloudConnection.current = null;
             void connection?.disconnect();
             setConnection(null);
             setSyncStatus("local");
             setQuota(null);
+            setCloudBytes(0);
+            setNeedsReconnect(false);
+            setSyncError("");
           }}
           onUpdate={() =>
             void run(async () => {

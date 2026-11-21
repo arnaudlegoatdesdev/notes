@@ -11,6 +11,7 @@ import {
 const DRIVE = "https://www.googleapis.com/drive/v3";
 const LOGIN_SCOPE = "openid email profile";
 const APPDATA_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
+const GOOGLE_AUTH_TIMEOUT = 90_000;
 interface GoogleTokenResponse {
   access_token?: string;
   expires_in?: number;
@@ -76,7 +77,7 @@ export function forgetGoogleGrant(): void {
 }
 let identityPromise: Promise<void> | undefined;
 export function prepareGoogleIdentity(): Promise<void> {
-  if (window.google?.accounts?.oauth2) return Promise.resolve();
+  if (window.google?.accounts?.oauth2?.initTokenClient) return Promise.resolve();
   if (identityPromise) return identityPromise;
   identityPromise = new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");
@@ -94,7 +95,11 @@ export function prepareGoogleIdentity(): Promise<void> {
     }, 20_000);
     script.onload = () => {
       clearTimeout(timer);
-      resolve();
+      if (window.google?.accounts?.oauth2?.initTokenClient) resolve();
+      else {
+        script.remove();
+        reject(new CloudError("La connexion Google n’est pas disponible. Réessayez.", "offline"));
+      }
     };
     script.onerror = () => {
       clearTimeout(timer);
@@ -116,7 +121,7 @@ export async function authorizeGoogle(
   purpose: "login" | "drive" = "drive",
   subject?: string,
 ): Promise<GoogleCredentials> {
-  if (!window.google?.accounts?.oauth2) {
+  if (!window.google?.accounts?.oauth2?.initTokenClient) {
     await prepareGoogleIdentity();
     throw new CloudError(
       "La connexion Google est prête. Cliquez à nouveau pour vous connecter.",
@@ -124,43 +129,42 @@ export async function authorizeGoogle(
     );
   }
   return new Promise((resolve, reject) => {
-    const client = window.google!.accounts.oauth2.initTokenClient({
-      client_id: clientId,
-      scope:
-        purpose === "login" ? LOGIN_SCOPE : `${LOGIN_SCOPE} ${APPDATA_SCOPE}`,
-      include_granted_scopes: true,
-      callback: (response) => {
-        if (response.error || !response.access_token) {
-          reject(
-            new CloudError(
-              "La connexion Google a été refusée ou annulée.",
-              "auth",
-            ),
-          );
-          return;
-        }
-        resolve({
-          accessToken: response.access_token,
-          expiresIn: Number(response.expires_in ?? 3600),
-          scope:
-            response.scope ||
-            (purpose === "drive"
-              ? `${LOGIN_SCOPE} ${APPDATA_SCOPE}`
-              : LOGIN_SCOPE),
-        });
-      },
-      error_callback: () =>
-        reject(
-          new CloudError(
-            "La fenêtre Google a été fermée ou bloquée. Autorisez les fenêtres de connexion puis réessayez.",
-            "auth",
-          ),
-        ),
-    });
-    client.requestAccessToken({
-      prompt: purpose === "login" ? "select_account" : "",
-      ...(subject ? { login_hint: subject } : {}),
-    });
+    const timer = setTimeout(() => reject(new CloudError(
+      "Google n’a pas terminé la connexion. Fermez la fenêtre Google si elle est encore ouverte, puis réessayez.",
+      "auth",
+    )), GOOGLE_AUTH_TIMEOUT);
+    const fail = (message: string) => {
+      clearTimeout(timer);
+      reject(new CloudError(message, "auth"));
+    };
+    try {
+      const client = window.google!.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: purpose === "login" ? LOGIN_SCOPE : `${LOGIN_SCOPE} ${APPDATA_SCOPE}`,
+        include_granted_scopes: true,
+        callback: (response) => {
+          if (response.error || !response.access_token) {
+            fail("La connexion Google a été refusée ou annulée.");
+            return;
+          }
+          clearTimeout(timer);
+          resolve({
+            accessToken: response.access_token,
+            expiresIn: Number(response.expires_in ?? 3600),
+            scope: response.scope,
+          });
+        },
+        error_callback: ({type}) => fail(type === "popup_closed"
+          ? "La fenêtre Google a été fermée. Vous pouvez réessayer."
+          : "La fenêtre Google n’a pas pu s’ouvrir. Autorisez les fenêtres de connexion puis réessayez."),
+      });
+      client.requestAccessToken({
+        prompt: purpose === "login" ? "select_account" : "",
+        ...(subject ? { login_hint: subject } : {}),
+      });
+    } catch {
+      fail("Impossible d’ouvrir la fenêtre Google. Vérifiez les réglages du navigateur puis réessayez.");
+    }
   });
 }
 

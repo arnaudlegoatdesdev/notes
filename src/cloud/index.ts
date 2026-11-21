@@ -7,7 +7,7 @@ import {
   prepareGoogleIdentity,
   readGoogleIdentity,
 } from "./google";
-import { updateWebCredentials, updateWebProfile } from "../session-storage";
+import { updateWebCredentials } from "../session-storage";
 import { CloudError, type CloudConnection, type CloudProvider } from "./types";
 export { CloudError } from "./types";
 export type {
@@ -31,7 +31,7 @@ if (typeof window !== "undefined" && !isDesktop && cloudConfigured("google"))
 export async function connectCloud(
   provider: CloudProvider,
   expectedSubject?: string,
-  options: { interactive?: boolean } = {},
+  options: { interactive?: boolean; renewAuthorization?: boolean } = {},
 ): Promise<CloudConnection> {
   if (provider !== "google")
     throw new CloudError(
@@ -43,7 +43,8 @@ export async function connectCloud(
       "La connexion Google n’est pas configurée.",
       "configuration",
     );
-  let credentials = expectedSubject ? driveGrant(expectedSubject) : null;
+  const cached = expectedSubject && !options.renewAuthorization ? driveGrant(expectedSubject) : null;
+  let credentials = cached;
   if (!credentials && isDesktop && expectedSubject) {
     try {
       credentials = await nativeRefreshGoogle(expectedSubject);
@@ -65,19 +66,14 @@ export async function connectCloud(
       ? await nativeAuthorize("google", "drive", expectedSubject)
       : await authorizeGoogle(clientId(), "drive", expectedSubject);
   }
-  if (expectedSubject) {
-    const identity =
-      credentials.user || (await readGoogleIdentity(credentials.accessToken));
-    if (identity.id !== expectedSubject)
-      throw new CloudError(
-        "Choisissez le même compte Google que pour la connexion à Notes.",
-        "auth",
-      );
-    if (!isDesktop) await updateWebProfile(identity);
+  if (!credentials.scope?.split(/\s+/).includes("https://www.googleapis.com/auth/drive.appdata")) {
+    throw new CloudError("Autorisez l’accès à Google Drive dans la fenêtre Google, puis réessayez.", "auth");
   }
-  if (expectedSubject) {
-    rememberGoogleGrant(credentials, expectedSubject);
-    if (!isDesktop) await updateWebCredentials(expectedSubject, credentials);
+  const identity = expectedSubject && !cached
+    ? credentials.user || (await readGoogleIdentity(credentials.accessToken))
+    : undefined;
+  if (identity && identity.id !== expectedSubject) {
+    throw new CloudError("Pour utiliser le Drive de cet autre compte, choisissez « Changer de compte Google » dans Notes.", "auth");
   }
   const connection = new GoogleConnection(
     credentials.accessToken,
@@ -101,6 +97,10 @@ export async function connectCloud(
   );
   try {
     await connection.identify();
+    if (expectedSubject && !cached) {
+      if (!isDesktop) await updateWebCredentials(expectedSubject, credentials, identity);
+      rememberGoogleGrant(credentials, expectedSubject);
+    }
     return connection;
   } catch (error) {
     await connection.disconnect();

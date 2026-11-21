@@ -7,7 +7,8 @@ import {
   forgetGoogleGrant,
   driveGrant,
 } from "../src/cloud/google";
-import { signInGoogle, assertVaultOwner, refreshGoogleProfile } from "../src/auth";
+import { signInGoogle, assertVaultOwner, refreshGoogleProfile, restoreGoogleSession } from "../src/auth";
+import { connectCloud } from "../src/cloud";
 import {
   availableCloudBytes,
   validateLimit,
@@ -16,6 +17,7 @@ import {
 } from "../src/quota";
 import { createData } from "../src/seed";
 afterEach(async () => {
+  vi.useRealTimers();
   await clearWebLogin();
   forgetGoogleGrant();
   vi.unstubAllGlobals();
@@ -116,6 +118,32 @@ describe("Google identity independent from Drive", () => {
     expect(start.mock.calls[0][0].scope).toContain(
       "https://www.googleapis.com/auth/drive.appdata",
     );
+  });
+  it("releases the browser OAuth flow when Google never calls back", async () => {
+    vi.useFakeTimers();
+    const requestAccessToken = vi.fn();
+    vi.stubGlobal("window", {
+      google: {accounts: {oauth2: {initTokenClient: () => ({requestAccessToken})}}},
+    });
+    const pending = authorizeGoogle("public-client", "drive");
+    const rejected = expect(pending).rejects.toThrow("Google n’a pas terminé la connexion");
+    expect(requestAccessToken).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(90_000);
+    await rejected;
+  });
+  it("requests a fresh Drive grant after a reconnect and rejects another Google identity before accessing Drive", async () => {
+    const scope = "openid email profile https://www.googleapis.com/auth/drive.appdata";
+    const start = fakeIdentity(scope);
+    const fetcher = vi.fn().mockResolvedValue(json({sub: "different-user", email: "other@example.com", email_verified: true}));
+    vi.stubGlobal("fetch", fetcher);
+    const user = {id:"current-user", name:"Current", email:"current@example.com"};
+    await saveWebLogin(user, { accessToken:"previous-drive-grant", scope, expiresIn:3600 });
+    await restoreGoogleSession();
+    expect(driveGrant(user.id)?.accessToken).toBe("previous-drive-grant");
+    await expect(connectCloud("google", user.id, {renewAuthorization:true})).rejects.toThrow("Changer de compte Google");
+    expect(start).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect((await readWebLogin())?.credentials?.accessToken).toBe("previous-drive-grant");
   });
   it("rejects unverified or malformed Google accounts", async () => {
     vi.stubGlobal(
